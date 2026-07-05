@@ -1,0 +1,19 @@
+{
+  "name": "habitat",
+  "version": "0.1.0",
+  "description": "Minimal Bun and TypeScript CLI app.",
+  "type": "module",
+  "bin": {
+    "habitat": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "check": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10"
+  },
+  "dependencies": {
+    "commander": "^14.0.0"
+  }
+}
