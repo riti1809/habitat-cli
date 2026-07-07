@@ -1,192 +1,167 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
-export type Zone = {
-  name: string;
-  purpose: string;
+export type StarterModuleInstance = {
+  id: string;
+  blueprintId: string;
+  displayName: string;
+  connectedTo: string[];
+  runtimeAttributes: Record<string, unknown>;
+  capabilities: string[];
+};
+
+export type ProductionBlueprint = {
+  id: string;
+  blueprintId: string;
+  displayName: string;
+  description?: string;
+  status?: string;
+  output?: Record<string, unknown>;
+  inputs?: Record<string, unknown>;
+  buildTicks?: number;
+  repeatable?: boolean;
+  runtimeAttributes?: Record<string, unknown>;
+  capabilities?: string[];
+};
+
+export type StoredRegistration = {
+  habitatUuid: string;
+  habitatId: string;
+  displayName: string;
+  baseUrl: string;
+  registeredAt: string;
+  starterModules: StarterModuleInstance[];
+  blueprints: ProductionBlueprint[];
+  lastStatus?: HabitatStatus;
+};
+
+export type HabitatStatus = {
+  id: string;
+  habitatSlug: string;
+  displayName: string;
+  catalogVersion: string;
   status: string;
+  lastSeenAt?: string | null;
 };
 
-export type Door = {
-  name: string;
-  status: string;
-  locked: string;
-};
+const registrationFilePath = join(
+  process.cwd(),
+  ".habitat",
+  "registration.json",
+);
 
-export type Sensor = {
-  name: string;
-  purpose: string;
-  status: string;
-};
-
-export type Rover = {
-  name: string;
-  purpose: string;
-  status: string;
-};
-
-export type Greenhouse = {
-  name: string;
-  purpose: string;
-  status: string;
-};
-
-export type Airlock = {
-  name: string;
-  pressureLevel: string;
-  locked: string;
-  doorNames: string[];
-};
-
-export type HabitatData = {
-  zones: Zone[];
-  doors: Door[];
-  sensors: Sensor[];
-  rovers: Rover[];
-  greenhouses: Greenhouse[];
-  airlocks: Airlock[];
-};
-
-const dataFilePath = join(process.cwd(), ".habitat", "data.json");
-
-const emptyData: HabitatData = {
-  zones: [],
-  doors: [],
-  sensors: [],
-  rovers: [],
-  greenhouses: [],
-  airlocks: [],
-};
-
-function ensureDataFile() {
-  const directoryPath = dirname(dataFilePath);
-
-  if (!existsSync(directoryPath)) {
-    mkdirSync(directoryPath, { recursive: true });
-  }
-
-  if (!existsSync(dataFilePath)) {
-    writeFileSync(dataFilePath, `${JSON.stringify(emptyData, null, 2)}\n`, "utf8");
-  }
+function ensureHabitatDirectory() {
+  mkdirSync(dirname(registrationFilePath), { recursive: true });
 }
 
-function isZone(value: unknown): value is Zone {
-  if (typeof value !== "object" || value === null) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isStarterModuleInstance(value: unknown): value is StarterModuleInstance {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const record = value as Record<string, unknown>;
-
   return (
-    typeof record.name === "string" &&
-    typeof record.purpose === "string" &&
-    typeof record.status === "string"
+    typeof value.id === "string" &&
+    typeof value.blueprintId === "string" &&
+    typeof value.displayName === "string" &&
+    isStringArray(value.connectedTo) &&
+    isRecord(value.runtimeAttributes) &&
+    isStringArray(value.capabilities)
   );
 }
 
-function isDoor(value: unknown): value is Door {
-  if (typeof value !== "object" || value === null) {
+function isProductionBlueprint(value: unknown): value is ProductionBlueprint {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const record = value as Record<string, unknown>;
-
   return (
-    typeof record.name === "string" &&
-    typeof record.status === "string" &&
-    typeof record.locked === "string"
+    typeof value.id === "string" &&
+    typeof value.blueprintId === "string" &&
+    typeof value.displayName === "string"
   );
 }
 
-function isAirlock(value: unknown): value is Airlock {
-  if (typeof value !== "object" || value === null) {
+function isHabitatStatus(value: unknown): value is HabitatStatus {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const record = value as Record<string, unknown>;
-
   return (
-    typeof record.name === "string" &&
-    typeof record.pressureLevel === "string" &&
-    typeof record.locked === "string" &&
-    Array.isArray(record.doorNames) &&
-    record.doorNames.every((doorName: unknown) => typeof doorName === "string")
+    typeof value.id === "string" &&
+    typeof value.habitatSlug === "string" &&
+    typeof value.displayName === "string" &&
+    typeof value.catalogVersion === "string" &&
+    typeof value.status === "string" &&
+    (value.lastSeenAt === undefined ||
+      value.lastSeenAt === null ||
+      typeof value.lastSeenAt === "string")
   );
 }
 
-function isSensor(value: unknown): value is Sensor {
-  if (typeof value !== "object" || value === null) {
+function isStoredRegistration(value: unknown): value is StoredRegistration {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const record = value as Record<string, unknown>;
-
   return (
-    typeof record.name === "string" &&
-    typeof record.purpose === "string" &&
-    typeof record.status === "string"
+    typeof value.habitatUuid === "string" &&
+    typeof value.habitatId === "string" &&
+    typeof value.displayName === "string" &&
+    typeof value.baseUrl === "string" &&
+    typeof value.registeredAt === "string" &&
+    Array.isArray(value.starterModules) &&
+    value.starterModules.every(isStarterModuleInstance) &&
+    Array.isArray(value.blueprints) &&
+    value.blueprints.every(isProductionBlueprint) &&
+    (value.lastStatus === undefined || isHabitatStatus(value.lastStatus))
   );
 }
 
-function isRover(value: unknown): value is Rover {
-  if (typeof value !== "object" || value === null) {
-    return false;
+export function getRegistrationFilePath() {
+  return registrationFilePath;
+}
+
+export function readRegistration(): StoredRegistration | undefined {
+  if (!existsSync(registrationFilePath)) {
+    return undefined;
   }
 
-  const record = value as Record<string, unknown>;
+  const parsed = JSON.parse(readFileSync(registrationFilePath, "utf8")) as unknown;
 
-  return (
-    typeof record.name === "string" &&
-    typeof record.purpose === "string" &&
-    typeof record.status === "string"
+  if (!isStoredRegistration(parsed)) {
+    throw new Error(
+      `Registration file is not valid: ${registrationFilePath}`,
+    );
+  }
+
+  return parsed;
+}
+
+export function writeRegistration(registration: StoredRegistration) {
+  ensureHabitatDirectory();
+  writeFileSync(
+    registrationFilePath,
+    `${JSON.stringify(registration, null, 2)}\n`,
+    "utf8",
   );
 }
 
-function isGreenhouse(value: unknown): value is Greenhouse {
-  if (typeof value !== "object" || value === null) {
-    return false;
+export function deleteRegistration() {
+  if (existsSync(registrationFilePath)) {
+    rmSync(registrationFilePath);
   }
-
-  const record = value as Record<string, unknown>;
-
-  return (
-    typeof record.name === "string" &&
-    typeof record.purpose === "string" &&
-    typeof record.status === "string"
-  );
-}
-
-export function getDataFilePath() {
-  return dataFilePath;
-}
-
-export function readData(): HabitatData {
-  ensureDataFile();
-
-  const fileContents = readFileSync(dataFilePath, "utf8");
-  const parsed = JSON.parse(fileContents) as unknown;
-
-  if (typeof parsed !== "object" || parsed === null) {
-    return { ...emptyData };
-  }
-
-  const record = parsed as Record<string, unknown>;
-
-  return {
-    zones: Array.isArray(record.zones) ? record.zones.filter(isZone) : [],
-    doors: Array.isArray(record.doors) ? record.doors.filter(isDoor) : [],
-    sensors: Array.isArray(record.sensors) ? record.sensors.filter(isSensor) : [],
-    rovers: Array.isArray(record.rovers) ? record.rovers.filter(isRover) : [],
-    greenhouses: Array.isArray(record.greenhouses)
-      ? record.greenhouses.filter(isGreenhouse)
-      : [],
-    airlocks: Array.isArray(record.airlocks)
-      ? record.airlocks.filter(isAirlock)
-      : [],
-  };
-}
-
-export function writeData(data: HabitatData) {
-  ensureDataFile();
-  writeFileSync(dataFilePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
