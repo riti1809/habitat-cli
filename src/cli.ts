@@ -5,17 +5,38 @@ import { Command, CommanderError } from "commander";
 import packageJson from "../package.json";
 import {
   deleteRegistration,
+  deleteModules,
   getRegistrationFilePath,
+  getModulesFilePath,
+  hydrateModulesFromStarterModules,
+  type HabitatModule,
   readRegistration,
+  readModules,
   type HabitatStatus,
   type ProductionBlueprint,
   type StarterModuleInstance,
   type StoredRegistration,
+  writeModules,
   writeRegistration,
 } from "./habitat-store";
 
 type RegisterOptions = {
   name: string;
+};
+
+type ModuleCreateOptions = {
+  id: string;
+  alias?: string;
+  blueprintId: string;
+  name: string;
+  status?: string;
+  health?: string;
+};
+
+type ModuleUpdateOptions = {
+  name?: string;
+  status?: string;
+  health?: string;
 };
 
 type KeplerErrorResponse = {
@@ -138,6 +159,16 @@ function isHabitatResponse(value: unknown): value is HabitatResponse {
   return isRecord(value) && isHabitatStatus(value.habitat);
 }
 
+function parseHealth(value: string) {
+  const health = Number(value);
+
+  if (!Number.isFinite(health) || health < 0 || health > 100) {
+    throw new Error("Health must be a number from 0 to 100.");
+  }
+
+  return health;
+}
+
 async function parseErrorMessage(response: Response) {
   const fallback = `${response.status} ${response.statusText}`.trim();
 
@@ -208,6 +239,7 @@ async function registerHabitat(name: string) {
   };
 
   writeRegistration(registration);
+  writeModules(hydrateModulesFromStarterModules(parsed.starterModules));
   return registration;
 }
 
@@ -233,35 +265,203 @@ async function fetchRegistrationStatus(registration: StoredRegistration) {
 }
 
 async function unregisterHabitat(registration: StoredRegistration) {
-  await keplerRequest(
-    `/habitats/${encodeURIComponent(registration.habitatId)}`,
-    {
-      method: "DELETE",
-    },
-    registration.baseUrl,
-  );
+  try {
+    await keplerRequest(
+      `/habitats/${encodeURIComponent(registration.habitatId)}`,
+      {
+        method: "DELETE",
+      },
+      registration.baseUrl,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (!message.toLowerCase().includes("not registered")) {
+      throw error;
+    }
+
+    console.warn(
+      `Kepler no longer has habitat "${registration.habitatId}". Removing stale local registration.`,
+    );
+  }
+
   deleteRegistration();
+  deleteModules();
+}
+
+function createModule(options: ModuleCreateOptions) {
+  const modules = readHydratedModules();
+
+  if (modules.some((module) => module.id === options.id)) {
+    throw new Error(`Module "${options.id}" already exists.`);
+  }
+
+  const alias = options.alias ?? options.id;
+
+  if (modules.some((module) => module.alias === alias)) {
+    throw new Error(`Module alias "${alias}" already exists.`);
+  }
+
+  const now = new Date().toISOString();
+  const runtimeAttributes: Record<string, unknown> = {};
+
+  if (options.status) {
+    runtimeAttributes.status = options.status;
+  }
+
+  if (options.health !== undefined) {
+    runtimeAttributes.health = parseHealth(options.health);
+  }
+
+  const module: HabitatModule = {
+    id: options.id,
+    alias,
+    blueprintId: options.blueprintId,
+    moduleType: options.blueprintId,
+    displayName: options.name,
+    connectedTo: [],
+    runtimeAttributes,
+    capabilities: [],
+    constructionStatus: "built",
+    source: "local",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  writeModules([...modules, module]);
+  return module;
+}
+
+function findModule(moduleId: string) {
+  return readHydratedModules().find(
+    (module) => module.id === moduleId || module.alias === moduleId,
+  );
+}
+
+function updateModule(moduleId: string, options: ModuleUpdateOptions) {
+  const modules = readHydratedModules();
+  const moduleIndex = modules.findIndex(
+    (module) => module.id === moduleId || module.alias === moduleId,
+  );
+
+  if (moduleIndex === -1) {
+    throw new Error(`Module "${moduleId}" was not found.`);
+  }
+
+  if (!options.name && !options.status && options.health === undefined) {
+    throw new Error("Provide at least one field to update.");
+  }
+
+  const currentModule = modules[moduleIndex];
+  const runtimeAttributes = { ...currentModule.runtimeAttributes };
+
+  if (options.status) {
+    runtimeAttributes.status = options.status;
+  }
+
+  if (options.health !== undefined) {
+    runtimeAttributes.health = parseHealth(options.health);
+  }
+
+  const updatedModule: HabitatModule = {
+    ...currentModule,
+    displayName: options.name ?? currentModule.displayName,
+    runtimeAttributes,
+    updatedAt: new Date().toISOString(),
+  };
+
+  modules[moduleIndex] = updatedModule;
+  writeModules(modules);
+  return updatedModule;
+}
+
+function deleteModule(moduleId: string) {
+  const modules = readHydratedModules();
+  const remainingModules = modules.filter(
+    (module) => module.id !== moduleId && module.alias !== moduleId,
+  );
+
+  if (remainingModules.length === modules.length) {
+    throw new Error(`Module "${moduleId}" was not found.`);
+  }
+
+  writeModules(remainingModules);
 }
 
 function printRegistration(registration: StoredRegistration) {
+  const modules = readModules();
+
   console.log(`Registered habitat "${registration.displayName}".`);
   console.log(`Habitat ID: ${registration.habitatId}`);
   console.log(`Habitat UUID: ${registration.habitatUuid}`);
   console.log(`Kepler base URL: ${registration.baseUrl}`);
   console.log(`Starter modules: ${registration.starterModules.length}`);
+  console.log(`Local modules: ${modules.length}`);
   console.log(`Blueprints returned: ${registration.blueprints.length}`);
   console.log(`Stored in ${getRegistrationFilePath()}`);
+  console.log(`Modules stored in ${getModulesFilePath()}`);
+}
+
+function ensureModulesHydrated(registration: StoredRegistration) {
+  const modules = readModules();
+
+  if (modules.length > 0 || registration.starterModules.length === 0) {
+    return modules;
+  }
+
+  const hydratedModules = hydrateModulesFromStarterModules(
+    registration.starterModules,
+    registration.registeredAt,
+  );
+  writeModules(hydratedModules);
+  return hydratedModules;
+}
+
+function readHydratedModules() {
+  const registration = readRegistration();
+  return registration ? ensureModulesHydrated(registration) : readModules();
 }
 
 function printStatus(status: HabitatStatus, registration: StoredRegistration) {
+  const modules = ensureModulesHydrated(registration);
+
   console.log(`Habitat: ${status.displayName}`);
   console.log(`Habitat ID: ${status.id}`);
   console.log(`Slug: ${status.habitatSlug}`);
   console.log(`Status: ${status.status}`);
+  console.log(`Modules: ${modules.length}`);
   console.log(`Catalog version: ${status.catalogVersion}`);
   console.log(`Last seen: ${status.lastSeenAt ?? "never"}`);
   console.log(`Local registration: ${getRegistrationFilePath()}`);
   console.log(`Registered at: ${registration.registeredAt}`);
+}
+
+function getModuleStatus(module: HabitatModule) {
+  const status = module.runtimeAttributes.status;
+  return typeof status === "string" ? status : "unknown";
+}
+
+function getModuleHealth(module: HabitatModule) {
+  const health = module.runtimeAttributes.health;
+  return typeof health === "number" ? String(health) : "unknown";
+}
+
+function printModuleList(modules: HabitatModule[]) {
+  if (modules.length === 0) {
+    console.log("No modules found.");
+    console.log(`Modules file: ${getModulesFilePath()}`);
+    return;
+  }
+
+  for (const module of modules) {
+    console.log(
+      `${module.alias} | type: ${module.moduleType} | name: ${module.displayName} | status: ${getModuleStatus(module)} | health: ${getModuleHealth(module)}`,
+    );
+  }
+}
+
+function printModule(module: HabitatModule) {
+  console.log(JSON.stringify(module, null, 2));
 }
 
 function printError(error: unknown) {
@@ -270,6 +470,9 @@ function printError(error: unknown) {
 }
 
 const program = new Command();
+const moduleCommand = program
+  .command("module")
+  .description("Create, list, show, update, and delete local habitat modules.");
 
 program
   .name("habitat")
@@ -293,6 +496,26 @@ Commands:
   habitat register --name "<habitat name>"
   habitat status
   habitat unregister
+  habitat module create --id <id> --blueprint-id <blueprintId> --name "<name>" [--alias <alias>]
+  habitat module list
+  habitat module show <id-or-alias>
+  habitat module update <id-or-alias> [--name <name>] [--status <status>] [--health <0-100>]
+  habitat module delete <id-or-alias>
+`,
+);
+
+moduleCommand.addHelpText(
+  "after",
+  `
+Local module records are stored in .habitat/modules.json.
+Registration hydrates starter modules from Kepler's starterModules response.
+
+Examples:
+  habitat module list
+  habitat module show command-1
+  habitat module create --id test-module-1 --alias test-1 --blueprint-id test-module --name "Test Module"
+  habitat module update test-module-1 --status active --health 95
+  habitat module delete test-module-1
 `,
 );
 
@@ -343,6 +566,89 @@ program
       await unregisterHabitat(registration);
       console.log(`Unregistered habitat "${registration.displayName}".`);
       console.log(`Removed ${getRegistrationFilePath()}`);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+moduleCommand
+  .command("create")
+  .description("Create a local module.")
+  .requiredOption("--id <id>", "Local module ID")
+  .option("--alias <alias>", "Short local module alias")
+  .requiredOption("--blueprint-id <blueprintId>", "Blueprint ID or module type")
+  .requiredOption("--name <name>", "Module display name")
+  .option("--status <status>", "Initial runtime status")
+  .option("--health <health>", "Initial health from 0 to 100")
+  .action((options: ModuleCreateOptions) => {
+    try {
+      const module = createModule(options);
+      console.log(`Created module "${module.id}".`);
+      printModule(module);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+moduleCommand
+  .command("list")
+  .description("List local modules.")
+  .action(() => {
+    try {
+      printModuleList(readHydratedModules());
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+moduleCommand
+  .command("show")
+  .description("Show one local module.")
+  .argument("<id>", "Module ID")
+  .action((moduleId: string) => {
+    try {
+      const module = findModule(moduleId);
+
+      if (!module) {
+        throw new Error(`Module "${moduleId}" was not found.`);
+      }
+
+      printModule(module);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+moduleCommand
+  .command("update")
+  .description("Update one local module.")
+  .argument("<id>", "Module ID")
+  .option("--name <name>", "New module display name")
+  .option("--status <status>", "New runtime status")
+  .option("--health <health>", "New health from 0 to 100")
+  .action((moduleId: string, options: ModuleUpdateOptions) => {
+    try {
+      const module = updateModule(moduleId, options);
+      console.log(`Updated module "${module.id}".`);
+      printModule(module);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+moduleCommand
+  .command("delete")
+  .description("Delete one local module.")
+  .argument("<id>", "Module ID")
+  .action((moduleId: string) => {
+    try {
+      deleteModule(moduleId);
+      console.log(`Deleted module "${moduleId}".`);
     } catch (error) {
       printError(error);
       process.exit(1);
