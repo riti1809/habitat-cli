@@ -1,3 +1,4 @@
 .env
 .habitat/registration.json
 .habitat/modules.json
+node_modules/

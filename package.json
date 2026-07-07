@@ -8,10 +8,13 @@
   },
   "scripts": {
     "start": "bun run src/cli.ts",
-    "check": "bunx tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test tests/**/*.test.ts"
   },
   "devDependencies": {
-    "@types/node": "^24.0.10"
+    "@types/node": "^24.0.10",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "commander": "^14.0.0"

@@ -19,6 +19,11 @@ import {
   writeModules,
   writeRegistration,
 } from "./habitat-store";
+import {
+  formatModulePowerStatusTable,
+  getCurrentPowerDrawKw,
+  runPowerTicks,
+} from "./power-tick";
 
 type RegisterOptions = {
   name: string;
@@ -37,6 +42,20 @@ type ModuleUpdateOptions = {
   name?: string;
   status?: string;
   health?: string;
+};
+
+const allowedModuleStatuses = [
+  "offline",
+  "idle",
+  "online",
+  "active",
+  "damaged",
+] as const;
+
+type AllowedModuleStatus = (typeof allowedModuleStatuses)[number];
+
+type TickOptions = {
+  ticks: string;
 };
 
 type KeplerErrorResponse = {
@@ -167,6 +186,24 @@ function parseHealth(value: string) {
   }
 
   return health;
+}
+
+function parseTicks(value: string) {
+  const ticks = Number(value);
+
+  if (!Number.isInteger(ticks) || ticks <= 0) {
+    throw new Error("Ticks must be a positive integer.");
+  }
+
+  return ticks;
+}
+
+function formatKwh(value: number) {
+  return value.toFixed(6);
+}
+
+function formatPowerDrawKw(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(3);
 }
 
 async function parseErrorMessage(response: Response) {
@@ -388,6 +425,41 @@ function deleteModule(moduleId: string) {
   writeModules(remainingModules);
 }
 
+function parseModuleStatus(value: string): AllowedModuleStatus {
+  if (allowedModuleStatuses.includes(value as AllowedModuleStatus)) {
+    return value as AllowedModuleStatus;
+  }
+
+  throw new Error(
+    `Status must be one of: ${allowedModuleStatuses.join(", ")}.`,
+  );
+}
+
+function setModuleStatus(moduleId: string, status: AllowedModuleStatus) {
+  const modules = readHydratedModules();
+  const moduleIndex = modules.findIndex(
+    (module) => module.id === moduleId || module.alias === moduleId,
+  );
+
+  if (moduleIndex === -1) {
+    throw new Error(`Module "${moduleId}" was not found.`);
+  }
+
+  const currentModule = modules[moduleIndex];
+  const updatedModule: HabitatModule = {
+    ...currentModule,
+    runtimeAttributes: {
+      ...currentModule.runtimeAttributes,
+      status,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+
+  modules[moduleIndex] = updatedModule;
+  writeModules(modules);
+  return updatedModule;
+}
+
 function printRegistration(registration: StoredRegistration) {
   const modules = readModules();
 
@@ -464,6 +536,21 @@ function printModule(module: HabitatModule) {
   console.log(JSON.stringify(module, null, 2));
 }
 
+function runTickCommand(options: TickOptions) {
+  const ticks = parseTicks(options.ticks);
+  const modules = readHydratedModules();
+  const result = runPowerTicks(modules, ticks);
+  writeModules(result.modules);
+
+  console.log(`Executed ${result.ticksExecuted} ticks.`);
+  console.log(`Power demand: ${result.totalPowerDemandKw} kW`);
+  console.log(`Energy consumed: ${formatKwh(result.energyConsumedKwh)} kWh`);
+  console.log(
+    `Battery energy: ${result.batteryEnergyBeforeKwh} -> ${formatKwh(result.batteryEnergyAfterKwh)} kWh`,
+  );
+  console.log(`Updated ${result.updatedBatteryCount} battery module.`);
+}
+
 function printError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);
@@ -501,6 +588,7 @@ Commands:
   habitat module show <id-or-alias>
   habitat module update <id-or-alias> [--name <name>] [--status <status>] [--health <0-100>]
   habitat module delete <id-or-alias>
+  habitat tick --ticks <ticks>
 `,
 );
 
@@ -518,6 +606,19 @@ Examples:
   habitat module delete test-module-1
 `,
 );
+
+program
+  .command("tick")
+  .description("Advance the local habitat simulation by a number of power ticks.")
+  .requiredOption("--ticks <ticks>", "Number of one-second ticks to execute")
+  .action((options: TickOptions) => {
+    try {
+      runTickCommand(options);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
 
 program
   .command("register")
@@ -598,6 +699,35 @@ moduleCommand
   .action(() => {
     try {
       printModuleList(readHydratedModules());
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+moduleCommand
+  .command("status")
+  .description("Show module states with current power draw.")
+  .action(() => {
+    try {
+      console.log(formatModulePowerStatusTable(readHydratedModules()));
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+moduleCommand
+  .command("set-status")
+  .description("Set one local module runtime status.")
+  .argument("<id>", "Module ID or alias")
+  .argument("<status>", "New module status")
+  .action((moduleId: string, status: string) => {
+    try {
+      const updatedModule = setModuleStatus(moduleId, parseModuleStatus(status));
+      console.log(
+        `Updated module "${updatedModule.id}" to status "${String(updatedModule.runtimeAttributes.status)}" (power draw: ${formatPowerDrawKw(getCurrentPowerDrawKw(updatedModule))} kW).`,
+      );
     } catch (error) {
       printError(error);
       process.exit(1);
