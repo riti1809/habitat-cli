@@ -24,6 +24,13 @@ import {
   getCurrentPowerDrawKw,
   runPowerTicks,
 } from "./power-tick";
+import {
+  getBlueprint,
+  listBlueprints,
+  type BlueprintDetail,
+  type BlueprintSummary,
+} from "./kepler-blueprints";
+import { listResources, type ResourceSummary } from "./kepler-resources";
 
 type RegisterOptions = {
   name: string;
@@ -551,6 +558,171 @@ function runTickCommand(options: TickOptions) {
   console.log(`Updated ${result.updatedBatteryCount} battery module.`);
 }
 
+function formatYesNo(value: boolean | undefined) {
+  if (value === undefined) {
+    return "-";
+  }
+
+  return value ? "yes" : "no";
+}
+
+function formatObjectEntries(value: Record<string, unknown>) {
+  return Object.entries(value).map(([key, entryValue]) => {
+    const formattedValue =
+      typeof entryValue === "string" ||
+      typeof entryValue === "number" ||
+      typeof entryValue === "boolean"
+        ? String(entryValue)
+        : JSON.stringify(entryValue);
+
+    return `${key}: ${formattedValue}`;
+  });
+}
+
+function formatSection(
+  lines: string[],
+  title: string,
+  value: Record<string, unknown> | string[] | undefined,
+) {
+  if (!value) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return;
+    }
+
+    lines.push(`${title}: ${value.join(", ")}`);
+    return;
+  }
+
+  const entries = formatObjectEntries(value);
+
+  if (entries.length === 0) {
+    return;
+  }
+
+  lines.push(`${title}:`);
+  for (const entry of entries) {
+    lines.push(`  ${entry}`);
+  }
+}
+
+function formatBlueprintTable(blueprints: BlueprintSummary[]) {
+  if (blueprints.length === 0) {
+    return "No blueprints found.";
+  }
+
+  const rows = blueprints.map((blueprint) => ({
+    blueprintId: blueprint.blueprintId,
+    displayName: blueprint.displayName,
+    buildTicks: blueprint.buildTicks === undefined ? "-" : String(blueprint.buildTicks),
+    repeatable: formatYesNo(blueprint.repeatable),
+  }));
+
+  const header = {
+    blueprintId: "Blueprint",
+    displayName: "Name",
+    buildTicks: "Ticks",
+    repeatable: "Repeatable",
+  };
+
+  const blueprintWidth = Math.max(
+    header.blueprintId.length,
+    ...rows.map((row) => row.blueprintId.length),
+  );
+  const nameWidth = Math.max(
+    header.displayName.length,
+    ...rows.map((row) => row.displayName.length),
+  );
+  const ticksWidth = Math.max(
+    header.buildTicks.length,
+    ...rows.map((row) => row.buildTicks.length),
+  );
+  const repeatableWidth = Math.max(
+    header.repeatable.length,
+    ...rows.map((row) => row.repeatable.length),
+  );
+
+  return [
+    `${header.blueprintId.padEnd(blueprintWidth)}  ${header.displayName.padEnd(nameWidth)}  ${header.buildTicks.padStart(ticksWidth)}  ${header.repeatable.padEnd(repeatableWidth)}`,
+    `${"-".repeat(blueprintWidth)}  ${"-".repeat(nameWidth)}  ${"-".repeat(ticksWidth)}  ${"-".repeat(repeatableWidth)}`,
+    ...rows.map(
+      (row) =>
+        `${row.blueprintId.padEnd(blueprintWidth)}  ${row.displayName.padEnd(nameWidth)}  ${row.buildTicks.padStart(ticksWidth)}  ${row.repeatable.padEnd(repeatableWidth)}`,
+    ),
+  ].join("\n");
+}
+
+function formatBlueprintDetail(blueprint: BlueprintDetail) {
+  const lines = [
+    `Blueprint ID: ${blueprint.blueprintId}`,
+    `Name: ${blueprint.displayName}`,
+  ];
+
+  if (blueprint.description) {
+    lines.push(`Description: ${blueprint.description}`);
+  }
+
+  lines.push(
+    `Build Ticks: ${blueprint.buildTicks === undefined ? "-" : String(blueprint.buildTicks)}`,
+  );
+  lines.push(`Repeatable: ${formatYesNo(blueprint.repeatable)}`);
+
+  formatSection(lines, "Inputs", blueprint.inputs);
+  formatSection(lines, "Output", blueprint.output);
+  formatSection(lines, "Required Facility", blueprint.requiredFacility);
+  formatSection(lines, "Prerequisites", blueprint.prerequisites);
+  formatSection(lines, "Unlocks", blueprint.unlocks);
+  formatSection(lines, "Capabilities", blueprint.capabilities);
+
+  return lines.join("\n");
+}
+
+function formatResourceTable(resources: ResourceSummary[]) {
+  if (resources.length === 0) {
+    return "No resource types found.";
+  }
+
+  const rows = resources.map((resource) => ({
+    resourceType: resource.resourceType,
+    displayName: resource.displayName,
+    kind: resource.kind,
+    rarity: resource.rarity,
+  }));
+
+  const header = {
+    resourceType: "Resource",
+    displayName: "Name",
+    kind: "Kind",
+    rarity: "Rarity",
+  };
+
+  const resourceWidth = Math.max(
+    header.resourceType.length,
+    ...rows.map((row) => row.resourceType.length),
+  );
+  const nameWidth = Math.max(
+    header.displayName.length,
+    ...rows.map((row) => row.displayName.length),
+  );
+  const kindWidth = Math.max(header.kind.length, ...rows.map((row) => row.kind.length));
+  const rarityWidth = Math.max(
+    header.rarity.length,
+    ...rows.map((row) => row.rarity.length),
+  );
+
+  return [
+    `${header.resourceType.padEnd(resourceWidth)}  ${header.displayName.padEnd(nameWidth)}  ${header.kind.padEnd(kindWidth)}  ${header.rarity.padEnd(rarityWidth)}`,
+    `${"-".repeat(resourceWidth)}  ${"-".repeat(nameWidth)}  ${"-".repeat(kindWidth)}  ${"-".repeat(rarityWidth)}`,
+    ...rows.map(
+      (row) =>
+        `${row.resourceType.padEnd(resourceWidth)}  ${row.displayName.padEnd(nameWidth)}  ${row.kind.padEnd(kindWidth)}  ${row.rarity.padEnd(rarityWidth)}`,
+    ),
+  ].join("\n");
+}
+
 function printError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);
@@ -560,6 +732,12 @@ const program = new Command();
 const moduleCommand = program
   .command("module")
   .description("Create, list, show, update, and delete local habitat modules.");
+const blueprintCommand = program
+  .command("blueprint")
+  .description("Inspect official Kepler blueprint catalog entries.");
+const resourceCommand = program
+  .command("resource")
+  .description("Inspect official Kepler resource catalog entries.");
 
 program
   .name("habitat")
@@ -588,6 +766,9 @@ Commands:
   habitat module show <id-or-alias>
   habitat module update <id-or-alias> [--name <name>] [--status <status>] [--health <0-100>]
   habitat module delete <id-or-alias>
+  habitat blueprint list
+  habitat blueprint show <blueprint-id>
+  habitat resource list
   habitat tick --ticks <ticks>
 `,
 );
@@ -604,6 +785,29 @@ Examples:
   habitat module create --id test-module-1 --alias test-1 --blueprint-id test-module --name "Test Module"
   habitat module update test-module-1 --status active --health 95
   habitat module delete test-module-1
+`,
+);
+
+blueprintCommand.addHelpText(
+  "after",
+  `
+These commands read the official Kepler blueprint catalog.
+They do not write local registration, module, or inventory state.
+
+Examples:
+  habitat blueprint list
+  habitat blueprint show survey-rover
+`,
+);
+
+resourceCommand.addHelpText(
+  "after",
+  `
+These commands read the official Kepler resource catalog.
+They describe possible resource types in the Kepler world, not your local inventory.
+
+Examples:
+  habitat resource list
 `,
 );
 
@@ -667,6 +871,46 @@ program
       await unregisterHabitat(registration);
       console.log(`Unregistered habitat "${registration.displayName}".`);
       console.log(`Removed ${getRegistrationFilePath()}`);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+blueprintCommand
+  .command("list")
+  .description("List official Kepler blueprints.")
+  .action(async () => {
+    try {
+      console.log(formatBlueprintTable(await listBlueprints()));
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+blueprintCommand
+  .command("show")
+  .description("Show one official Kepler blueprint.")
+  .argument("<blueprint-id>", "Blueprint ID")
+  .action(async (blueprintId: string) => {
+    try {
+      console.log(formatBlueprintDetail(await getBlueprint(blueprintId)));
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+resourceCommand
+  .command("list")
+  .description("List official Kepler resources.")
+  .action(async () => {
+    try {
+      console.log(
+        "Resource catalog entries are possible resource types in the Kepler world, not local inventory.",
+      );
+      console.log(formatResourceTable(await listResources()));
     } catch (error) {
       printError(error);
       process.exit(1);
