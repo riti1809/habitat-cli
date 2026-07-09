@@ -6,8 +6,7 @@ import packageJson from "../package.json";
 import {
   deleteRegistration,
   deleteModules,
-  getRegistrationFilePath,
-  getModulesFilePath,
+  getDatabaseFilePath,
   hydrateModulesFromStarterModules,
   type HabitatModule,
   readRegistration,
@@ -500,6 +499,7 @@ function setModuleStatus(moduleId: string, status: AllowedModuleStatus) {
 
 function printRegistration(registration: StoredRegistration) {
   const modules = readModules();
+  const databasePath = getDatabaseFilePath();
 
   console.log(`Registered habitat "${registration.displayName}".`);
   console.log(`Habitat ID: ${registration.habitatId}`);
@@ -508,8 +508,7 @@ function printRegistration(registration: StoredRegistration) {
   console.log(`Starter modules: ${registration.starterModules.length}`);
   console.log(`Local modules: ${modules.length}`);
   console.log(`Blueprints returned: ${registration.blueprints.length}`);
-  console.log(`Stored in ${getRegistrationFilePath()}`);
-  console.log(`Modules stored in ${getModulesFilePath()}`);
+  console.log(`Local state database: ${databasePath}`);
 }
 
 function ensureModulesHydrated(registration: StoredRegistration) {
@@ -542,7 +541,7 @@ function printStatus(status: HabitatStatus, registration: StoredRegistration) {
   console.log(`Modules: ${modules.length}`);
   console.log(`Catalog version: ${status.catalogVersion}`);
   console.log(`Last seen: ${status.lastSeenAt ?? "never"}`);
-  console.log(`Local registration: ${getRegistrationFilePath()}`);
+  console.log(`Local state database: ${getDatabaseFilePath()}`);
   console.log(`Registered at: ${registration.registeredAt}`);
 }
 
@@ -564,7 +563,7 @@ function getRuntimeNumber(module: HabitatModule, key: string) {
 function printModuleList(modules: HabitatModule[]) {
   if (modules.length === 0) {
     console.log("No modules found.");
-    console.log(`Modules file: ${getModulesFilePath()}`);
+    console.log(`Local state database: ${getDatabaseFilePath()}`);
     return;
   }
 
@@ -981,8 +980,9 @@ Environment:
   KEPLER_BASE_URL      Optional Kepler base URL; defaults to ${defaultBaseUrl}
 
 Local files:
-  .habitat/registration.json stores the Kepler habitat ID, generated habitat UUID,
-  display name, registration timestamp, starter modules, and returned blueprints.
+  .habitat/state.sqlite stores local registration and module state.
+  Legacy .habitat/registration.json and .habitat/modules.json are ignored unless
+  migrated manually.
 
 Commands:
   habitat register --name "<habitat name>"
@@ -1009,8 +1009,8 @@ Commands:
 moduleCommand.addHelpText(
   "after",
   `
-Local module records are stored in .habitat/modules.json.
-Registration hydrates starter modules from Kepler's starterModules response.
+Local module records are stored in .habitat/state.sqlite.
+Registration hydrates starter modules from Kepler's starterModules response into SQLite.
 
 Examples:
   habitat module list
@@ -1080,7 +1080,7 @@ inventoryCommand
 inventoryCommand.addHelpText(
   "after",
   `
-Inventory is stored on the supply-cache module in .habitat/modules.json.
+Inventory is stored on the supply-cache module in .habitat/state.sqlite.
 
 Examples:
   habitat inventory list
@@ -1227,7 +1227,7 @@ program
 
       await unregisterHabitat(registration);
       console.log(`Unregistered habitat "${registration.displayName}".`);
-      console.log(`Removed ${getRegistrationFilePath()}`);
+      console.log(`Cleared local state in ${getDatabaseFilePath()}`);
     } catch (error) {
       printError(error);
       process.exit(1);

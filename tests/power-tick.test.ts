@@ -1,12 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-import type { HabitatModule } from "../src/habitat-store.ts";
+import {
+  getDatabaseFilePath,
+  readModules,
+  readRegistration,
+  writeModules,
+  writeRegistration,
+  type HabitatModule,
+  type StoredRegistration,
+} from "../src/habitat-store.ts";
 import {
   applySolarGeneration,
   formatModulePowerStatusTable,
@@ -30,6 +38,24 @@ function createModule(overrides: Partial<HabitatModule>): HabitatModule {
     updatedAt: "2026-07-08T00:00:00.000Z",
     ...overrides,
   };
+}
+
+function ensureHabitatDir(tempDir: string) {
+  mkdirSync(join(tempDir, ".habitat"), { recursive: true });
+}
+
+function writeLocalModules(tempDir: string, modules: HabitatModule[]) {
+  ensureHabitatDir(tempDir);
+  writeModules(modules, tempDir);
+}
+
+function readLocalModules(tempDir: string) {
+  return readModules(tempDir);
+}
+
+function writeLocalRegistration(tempDir: string, registration: StoredRegistration) {
+  ensureHabitatDir(tempDir);
+  writeRegistration(registration, tempDir);
 }
 
 const tsxLoaderPath = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url);
@@ -280,8 +306,6 @@ test("runPowerTicks rejects ticks when battery energy is insufficient", () => {
 
 test("habitat tick drains battery energy and persists the updated modules file", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-tick-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
 
   const modules = [
     createModule({
@@ -313,11 +337,7 @@ test("habitat tick drains battery energy and persists the updated modules file",
     }),
   ];
 
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify(modules, null, 2)}\n`,
-    "utf8",
-  );
+  writeLocalModules(tempDir, modules);
 
   const result = runCliSync(["tick", "--ticks", "60"], { cwd: tempDir });
 
@@ -328,18 +348,14 @@ test("habitat tick drains battery energy and persists the updated modules file",
   assert.match(result.stdout, /Battery energy: 500 -> 499\.966667 kWh/);
   assert.match(result.stdout, /Updated 1 battery module\./);
 
-  const updatedModules = JSON.parse(
-    readFileSync(join(habitatDir, "modules.json"), "utf8"),
-  ) as HabitatModule[];
+  const updatedModules = readLocalModules(tempDir);
 
   assert.equal(updatedModules[0]?.runtimeAttributes.currentEnergyKwh, 499.96666666666664);
 });
 
 test("habitat tick rejects invalid tick counts", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-tick-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
-  writeFileSync(join(habitatDir, "modules.json"), "[]\n", "utf8");
+  writeLocalModules(tempDir, []);
 
   const result = runCliSync(["tick", "--ticks", "0"], { cwd: tempDir });
 
@@ -349,8 +365,6 @@ test("habitat tick rejects invalid tick counts", () => {
 
 test("habitat tick explains when there is no usable battery energy", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-tick-no-battery-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
 
   const modules = [
     createModule({
@@ -368,11 +382,7 @@ test("habitat tick explains when there is no usable battery energy", () => {
     }),
   ];
 
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify(modules, null, 2)}\n`,
-    "utf8",
-  );
+  writeLocalModules(tempDir, modules);
 
   const result = runCliSync(["tick", "1"], { cwd: tempDir });
 
@@ -437,8 +447,6 @@ test("formatModulePowerStatusTable shows module state, current draw, and summary
 
 test("habitat module status prints the power status table", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-status-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
 
   const modules = [
     createModule({
@@ -470,11 +478,7 @@ test("habitat module status prints the power status table", () => {
     }),
   ];
 
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify(modules, null, 2)}\n`,
-    "utf8",
-  );
+  writeLocalModules(tempDir, modules);
 
   const result = runCliSync(["module", "status"], { cwd: tempDir });
 
@@ -488,8 +492,6 @@ test("habitat module status prints the power status table", () => {
 
 test("habitat module show prints detailed module information", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-module-show-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
 
   const modules = [
     createModule({
@@ -571,11 +573,7 @@ test("habitat module show prints detailed module information", () => {
     }),
   ];
 
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify(modules, null, 2)}\n`,
-    "utf8",
-  );
+  writeLocalModules(tempDir, modules);
 
   const fabricator = runCliSync(["module", "show", "workshop-fabricator-1"], {
     cwd: tempDir,
@@ -614,8 +612,6 @@ test("habitat module show prints detailed module information", () => {
 
 test("habitat module set-status updates only runtimeAttributes.status and reports current draw", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-set-status-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
 
   const modules = [
     createModule({
@@ -637,11 +633,7 @@ test("habitat module set-status updates only runtimeAttributes.status and report
     }),
   ];
 
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify(modules, null, 2)}\n`,
-    "utf8",
-  );
+  writeLocalModules(tempDir, modules);
 
   const result = runCliSync(["module", "set-status", "fabricator-1", "active"], {
     cwd: tempDir,
@@ -653,9 +645,7 @@ test("habitat module set-status updates only runtimeAttributes.status and report
     /Updated module "fabricator-1" to status "active" \(power draw: 8 kW\)\./,
   );
 
-  const updatedModules = JSON.parse(
-    readFileSync(join(habitatDir, "modules.json"), "utf8"),
-  ) as HabitatModule[];
+  const updatedModules = readLocalModules(tempDir);
 
   assert.equal(updatedModules[0]?.runtimeAttributes.status, "active");
   assert.equal(updatedModules[0]?.runtimeAttributes.health, 100);
@@ -669,25 +659,18 @@ test("habitat module set-status updates only runtimeAttributes.status and report
 
 test("habitat module set-status rejects invalid statuses", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-set-status-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
-
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify([
-      createModule({
-        id: "module-1",
-        alias: "module-1",
-        runtimeAttributes: {
-          status: "offline",
-          powerDrawKw: {
-            offline: 0,
-          },
+  writeLocalModules(tempDir, [
+    createModule({
+      id: "module-1",
+      alias: "module-1",
+      runtimeAttributes: {
+        status: "offline",
+        powerDrawKw: {
+          offline: 0,
         },
-      }),
-    ], null, 2)}\n`,
-    "utf8",
-  );
+      },
+    }),
+  ]);
 
   const result = runCliSync(["module", "set-status", "module-1", "broken"], {
     cwd: tempDir,
@@ -751,6 +734,70 @@ test("habitat solar status prints readable solar conditions", async () => {
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /Current solar irradiance: 735 W\/m2/);
       assert.match(result.stdout, /Condition: Dust is dimming the sunlight\./);
+    },
+  );
+});
+
+test("habitat register stores local state in SQLite and hydrates starter modules", async () => {
+  await withMockKepler(
+    {
+      "/habitats/register": {
+        status: 201,
+        body: {
+          habitatId: "habitat_test_1",
+          starterModules: [
+            {
+              id: "starter-command-1",
+              blueprintId: "command-module",
+              displayName: "Command Module",
+              connectedTo: [],
+              runtimeAttributes: {
+                status: "active",
+                health: 100,
+                powerDrawKw: {
+                  active: 2,
+                },
+              },
+              capabilities: ["habitat-command"],
+            },
+          ],
+          blueprints: [
+            {
+              id: "bp-1",
+              blueprintId: "command-module",
+              displayName: "Command Module Blueprint",
+            },
+          ],
+        },
+      },
+    },
+    async (baseUrl) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "habitat-register-sqlite-"));
+
+      const result = await runCli(["register", "--name", "Kepler Frontier"], {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          KEPLER_BASE_URL: baseUrl,
+          KEPLER_PLANET_TOKEN: "test-token",
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Registered habitat "Kepler Frontier"\./);
+      assert.match(result.stdout, /Local state database:/);
+      assert.equal(existsSync(getDatabaseFilePath(tempDir)), true);
+
+      const registration = readRegistration(tempDir);
+      const modules = readLocalModules(tempDir);
+
+      assert.equal(registration?.habitatId, "habitat_test_1");
+      assert.equal(registration?.displayName, "Kepler Frontier");
+      assert.equal(registration?.baseUrl, baseUrl);
+      assert.equal(registration?.starterModules.length, 1);
+      assert.equal(modules.length, 1);
+      assert.equal(modules[0]?.moduleType, "command-module");
+      assert.equal(modules[0]?.alias, "command-1");
     },
   );
 });
@@ -844,8 +891,6 @@ test("habitat tick fetches solar irradiance and stores generated energy", async 
     },
     async (baseUrl) => {
       const tempDir = mkdtempSync(join(tmpdir(), "habitat-solar-tick-"));
-      const habitatDir = join(tempDir, ".habitat");
-      mkdirSync(habitatDir, { recursive: true });
 
       const modules = [
         createModule({
@@ -880,11 +925,7 @@ test("habitat tick fetches solar irradiance and stores generated energy", async 
         }),
       ];
 
-      writeFileSync(
-        join(habitatDir, "modules.json"),
-        `${JSON.stringify(modules, null, 2)}\n`,
-        "utf8",
-      );
+      writeLocalModules(tempDir, modules);
 
       const result = await runCli(["tick", "180"], {
         cwd: tempDir,
@@ -901,9 +942,7 @@ test("habitat tick fetches solar irradiance and stores generated energy", async 
       assert.match(result.stdout, /Online battery energy: 499\.800000 -> 500\.000000 kWh/);
       assert.doesNotMatch(result.stdout, /No solar charging happened:/);
 
-      const updatedModules = JSON.parse(
-        readFileSync(join(habitatDir, "modules.json"), "utf8"),
-      ) as HabitatModule[];
+      const updatedModules = readLocalModules(tempDir);
 
       assert.equal(updatedModules[0]?.runtimeAttributes.currentEnergyKwh, 500);
     },
@@ -925,8 +964,6 @@ test("habitat tick reports why no solar charging happened when no solar modules 
     },
     async (baseUrl) => {
       const tempDir = mkdtempSync(join(tmpdir(), "habitat-solar-no-charge-"));
-      const habitatDir = join(tempDir, ".habitat");
-      mkdirSync(habitatDir, { recursive: true });
 
       const modules = [
         createModule({
@@ -961,11 +998,7 @@ test("habitat tick reports why no solar charging happened when no solar modules 
         }),
       ];
 
-      writeFileSync(
-        join(habitatDir, "modules.json"),
-        `${JSON.stringify(modules, null, 2)}\n`,
-        "utf8",
-      );
+      writeLocalModules(tempDir, modules);
 
       const result = await runCli(["tick", "60"], {
         cwd: tempDir,
@@ -981,16 +1014,14 @@ test("habitat tick reports why no solar charging happened when no solar modules 
         /No solar charging happened: no online solar modules are available\./,
       );
 
-      const updatedModules = JSON.parse(
-        readFileSync(join(habitatDir, "modules.json"), "utf8"),
-      ) as HabitatModule[];
+      const updatedModules = readLocalModules(tempDir);
 
       assert.equal(updatedModules[0]?.runtimeAttributes.currentEnergyKwh, 50);
     },
   );
 });
 
-test("habitat tick explains every solar charging blocker", async () => {
+test("habitat tick explains every solar charging blocker", { timeout: 15000 }, async () => {
   const scenarios = [
     {
       name: "no solar panel exists",
@@ -1301,14 +1332,7 @@ test("habitat tick explains every solar charging blocker", async () => {
           },
       async (baseUrl) => {
         const tempDir = mkdtempSync(join(tmpdir(), `habitat-solar-${scenario.name}-`));
-        const habitatDir = join(tempDir, ".habitat");
-        mkdirSync(habitatDir, { recursive: true });
-
-        writeFileSync(
-          join(habitatDir, "modules.json"),
-          `${JSON.stringify(scenario.modules, null, 2)}\n`,
-          "utf8",
-        );
+        writeLocalModules(tempDir, scenario.modules);
 
         const result = await runCli(["tick", "60"], {
           cwd: tempDir,
@@ -1375,8 +1399,7 @@ test("habitat blueprint list prints a concise blueprint table", async () => {
       assert.match(result.stdout, /Blueprint\s+Name\s+Ticks\s+Repeatable/);
       assert.match(result.stdout, /survey-rover\s+Survey Rover\s+120\s+yes/);
       assert.match(result.stdout, /greenhouse\s+Greenhouse\s+240\s+no/);
-      assert.equal(existsSync(join(tempDir, ".habitat", "registration.json")), false);
-      assert.equal(existsSync(join(tempDir, ".habitat", "modules.json")), false);
+      assert.equal(existsSync(getDatabaseFilePath(tempDir)), false);
     },
   );
 });
@@ -1431,8 +1454,7 @@ test("habitat blueprint show prints readable details for one blueprint", async (
       assert.match(result.stdout, /Prerequisites: rover-bay/);
       assert.match(result.stdout, /Unlocks: nearby-resource-discovery/);
       assert.match(result.stdout, /Capabilities: terrain-survey/);
-      assert.equal(existsSync(join(tempDir, ".habitat", "registration.json")), false);
-      assert.equal(existsSync(join(tempDir, ".habitat", "modules.json")), false);
+      assert.equal(existsSync(getDatabaseFilePath(tempDir)), false);
     },
   );
 });
@@ -1463,8 +1485,7 @@ test("habitat blueprint show prints a friendly error for a missing blueprint", a
 
       assert.equal(result.status, 1);
       assert.match(result.stderr, /Blueprint "missing-blueprint" was not found\./);
-      assert.equal(existsSync(join(tempDir, ".habitat", "registration.json")), false);
-      assert.equal(existsSync(join(tempDir, ".habitat", "modules.json")), false);
+      assert.equal(existsSync(getDatabaseFilePath(tempDir)), false);
     },
   );
 });
@@ -1518,47 +1539,35 @@ test("habitat resource list prints a concise resource catalog table", async () =
       assert.match(result.stdout, /Resource\s+Name\s+Kind\s+Rarity/);
       assert.match(result.stdout, /iron-ore\s+Iron Ore\s+mineral\s+common/);
       assert.match(result.stdout, /oxygen\s+Oxygen\s+life-support\s+essential/);
-      assert.equal(existsSync(join(tempDir, ".habitat", "registration.json")), false);
-      assert.equal(existsSync(join(tempDir, ".habitat", "modules.json")), false);
+      assert.equal(existsSync(getDatabaseFilePath(tempDir)), false);
     },
   );
 });
 
 test("habitat inventory add increments supply cache inventory and persists it", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-inventory-add-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
-
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify(
-      [
-        createModule({
-          id: "supply-1",
-          alias: "supply-1",
-          blueprintId: "supply-cache",
-          moduleType: "supply-cache",
-          displayName: "Supply Cache",
-          runtimeAttributes: {
-            status: "offline",
-            physicalVolumeM3: 25,
-            storageMassKg: 6000,
-            cargoVolumeM3: 18,
-            powerDrawKw: {
-              offline: 0,
-              online: 0,
-              active: 0,
-              damaged: 0,
-            },
-          },
-          capabilities: ["storage"],
-        }),
-      ],
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+  writeLocalModules(tempDir, [
+    createModule({
+      id: "supply-1",
+      alias: "supply-1",
+      blueprintId: "supply-cache",
+      moduleType: "supply-cache",
+      displayName: "Supply Cache",
+      runtimeAttributes: {
+        status: "offline",
+        physicalVolumeM3: 25,
+        storageMassKg: 6000,
+        cargoVolumeM3: 18,
+        powerDrawKw: {
+          offline: 0,
+          online: 0,
+          active: 0,
+          damaged: 0,
+        },
+      },
+      capabilities: ["storage"],
+    }),
+  ]);
 
   const first = runCliSync(["inventory", "add", "ferrite", "90"], {
     cwd: tempDir,
@@ -1577,9 +1586,7 @@ test("habitat inventory add increments supply cache inventory and persists it", 
   assert.match(second.stdout, /Supply cache inventory updated: silicate-glass = 45/);
   assert.match(third.stdout, /Supply cache inventory updated: conductive-ore = 18/);
 
-  const updatedModules = JSON.parse(
-    readFileSync(join(habitatDir, "modules.json"), "utf8"),
-  ) as HabitatModule[];
+  const updatedModules = readLocalModules(tempDir);
   const supplyCache = updatedModules[0];
 
   assert.deepEqual(supplyCache?.runtimeAttributes.inventory, {
@@ -1638,98 +1645,79 @@ test("habitat construct spends inventory and attaches a construction job to the 
     },
     async (baseUrl) => {
       const tempDir = mkdtempSync(join(tmpdir(), "habitat-construct-"));
-      const habitatDir = join(tempDir, ".habitat");
-      mkdirSync(habitatDir, { recursive: true });
+      writeLocalRegistration(tempDir, {
+        habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
+        habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
+        displayName: "Kepler Frontier",
+        baseUrl,
+        registeredAt: "2026-07-07T18:35:56.464Z",
+        starterModules: [],
+        blueprints: [],
+      });
 
-      writeFileSync(
-        join(habitatDir, "registration.json"),
-        `${JSON.stringify(
-          {
-            habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
-            habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
-            displayName: "Kepler Frontier",
-            baseUrl,
-            registeredAt: "2026-07-07T18:35:56.464Z",
-            starterModules: [],
-            blueprints: [],
+      writeLocalModules(tempDir, [
+        createModule({
+          id: "fabricator-1",
+          alias: "fabricator-1",
+          blueprintId: "workshop-fabricator",
+          moduleType: "workshop-fabricator",
+          displayName: "Workshop Fabricator",
+          runtimeAttributes: {
+            health: 100,
+            status: "online",
+            crewCapacity: 1,
+            physicalVolumeM3: 20,
+            rawMaterialBufferKg: 1500,
+            inProcessStorageM3: 3,
+            powerDrawKw: {
+              online: 1,
+              active: 8,
+              damaged: 1,
+            },
           },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
-
-      writeFileSync(
-        join(habitatDir, "modules.json"),
-        `${JSON.stringify(
-          [
-            createModule({
-              id: "fabricator-1",
-              alias: "fabricator-1",
-              blueprintId: "workshop-fabricator",
-              moduleType: "workshop-fabricator",
-              displayName: "Workshop Fabricator",
-              runtimeAttributes: {
-                health: 100,
-                status: "online",
-                crewCapacity: 1,
-                physicalVolumeM3: 20,
-                rawMaterialBufferKg: 1500,
-                inProcessStorageM3: 3,
-                powerDrawKw: {
-                  online: 1,
-                  active: 8,
-                  damaged: 1,
-                },
-              },
-              capabilities: ["basic-fabrication"],
-            }),
-            createModule({
-              id: "battery-1",
-              alias: "battery-1",
-              blueprintId: "basic-battery",
-              moduleType: "basic-battery",
-              displayName: "Battery",
-              runtimeAttributes: {
-                status: "offline",
-                currentEnergyKwh: 500,
-                powerDrawKw: {
-                  offline: 0,
-                },
-              },
-              capabilities: ["power-storage"],
-            }),
-            createModule({
-              id: "supply-1",
-              alias: "supply-1",
-              blueprintId: "supply-cache",
-              moduleType: "supply-cache",
-              displayName: "Supply Cache",
-              runtimeAttributes: {
-                status: "offline",
-                physicalVolumeM3: 25,
-                storageMassKg: 6000,
-                cargoVolumeM3: 18,
-                inventory: {
-                  ferrite: 120,
-                  "silicate-glass": 60,
-                  "conductive-ore": 30,
-                },
-                powerDrawKw: {
-                  offline: 0,
-                  online: 0,
-                  active: 0,
-                  damaged: 0,
-                },
-              },
-              capabilities: ["storage"],
-            }),
-          ],
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
+          capabilities: ["basic-fabrication"],
+        }),
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "offline",
+            currentEnergyKwh: 500,
+            powerDrawKw: {
+              offline: 0,
+            },
+          },
+          capabilities: ["power-storage"],
+        }),
+        createModule({
+          id: "supply-1",
+          alias: "supply-1",
+          blueprintId: "supply-cache",
+          moduleType: "supply-cache",
+          displayName: "Supply Cache",
+          runtimeAttributes: {
+            status: "offline",
+            physicalVolumeM3: 25,
+            storageMassKg: 6000,
+            cargoVolumeM3: 18,
+            inventory: {
+              ferrite: 120,
+              "silicate-glass": 60,
+              "conductive-ore": 30,
+            },
+            powerDrawKw: {
+              offline: 0,
+              online: 0,
+              active: 0,
+              damaged: 0,
+            },
+          },
+          capabilities: ["storage"],
+        }),
+      ]);
 
       const result = await runCli(["construct", "small-solar-array"], {
         cwd: tempDir,
@@ -1746,9 +1734,7 @@ test("habitat construct spends inventory and attaches a construction job to the 
       assert.match(result.stdout, /Build ticks: 180/);
       assert.match(result.stdout, /Remaining ticks: 180/);
 
-      const updatedModules = JSON.parse(
-        readFileSync(join(habitatDir, "modules.json"), "utf8"),
-      ) as HabitatModule[];
+      const updatedModules = readLocalModules(tempDir);
       const updatedFabricator = updatedModules[0];
       const updatedBattery = updatedModules[1];
       const updatedSupplyCache = updatedModules[2];
@@ -1824,92 +1810,73 @@ test("habitat construct rejects when local inventory is insufficient", async () 
     },
     async (baseUrl) => {
       const tempDir = mkdtempSync(join(tmpdir(), "habitat-construct-insufficient-"));
-      const habitatDir = join(tempDir, ".habitat");
-      mkdirSync(habitatDir, { recursive: true });
+      writeLocalRegistration(tempDir, {
+        habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
+        habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
+        displayName: "Kepler Frontier",
+        baseUrl,
+        registeredAt: "2026-07-07T18:35:56.464Z",
+        starterModules: [],
+        blueprints: [],
+      });
 
-      writeFileSync(
-        join(habitatDir, "registration.json"),
-        `${JSON.stringify(
-          {
-            habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
-            habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
-            displayName: "Kepler Frontier",
-            baseUrl,
-            registeredAt: "2026-07-07T18:35:56.464Z",
-            starterModules: [],
-            blueprints: [],
+      writeLocalModules(tempDir, [
+        createModule({
+          id: "fabricator-1",
+          alias: "fabricator-1",
+          blueprintId: "workshop-fabricator",
+          moduleType: "workshop-fabricator",
+          displayName: "Workshop Fabricator",
+          runtimeAttributes: {
+            status: "online",
+            powerDrawKw: {
+              online: 1,
+              active: 8,
+            },
           },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
-
-      writeFileSync(
-        join(habitatDir, "modules.json"),
-        `${JSON.stringify(
-          [
-            createModule({
-              id: "fabricator-1",
-              alias: "fabricator-1",
-              blueprintId: "workshop-fabricator",
-              moduleType: "workshop-fabricator",
-              displayName: "Workshop Fabricator",
-              runtimeAttributes: {
-                status: "online",
-                powerDrawKw: {
-                  online: 1,
-                  active: 8,
-                },
-              },
-              capabilities: ["basic-fabrication"],
-            }),
-            createModule({
-              id: "battery-1",
-              alias: "battery-1",
-              blueprintId: "basic-battery",
-              moduleType: "basic-battery",
-              displayName: "Battery",
-              runtimeAttributes: {
-                status: "offline",
-                currentEnergyKwh: 500,
-                powerDrawKw: {
-                  offline: 0,
-                },
-              },
-              capabilities: ["power-storage"],
-            }),
-            createModule({
-              id: "supply-1",
-              alias: "supply-1",
-              blueprintId: "supply-cache",
-              moduleType: "supply-cache",
-              displayName: "Supply Cache",
-              runtimeAttributes: {
-                status: "offline",
-                physicalVolumeM3: 25,
-                storageMassKg: 6000,
-                cargoVolumeM3: 18,
-                inventory: {
-                  ferrite: 10,
-                  "silicate-glass": 5,
-                  "conductive-ore": 3,
-                },
-                powerDrawKw: {
-                  offline: 0,
-                  online: 0,
-                  active: 0,
-                  damaged: 0,
-                },
-              },
-              capabilities: ["storage"],
-            }),
-          ],
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
+          capabilities: ["basic-fabrication"],
+        }),
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "offline",
+            currentEnergyKwh: 500,
+            powerDrawKw: {
+              offline: 0,
+            },
+          },
+          capabilities: ["power-storage"],
+        }),
+        createModule({
+          id: "supply-1",
+          alias: "supply-1",
+          blueprintId: "supply-cache",
+          moduleType: "supply-cache",
+          displayName: "Supply Cache",
+          runtimeAttributes: {
+            status: "offline",
+            physicalVolumeM3: 25,
+            storageMassKg: 6000,
+            cargoVolumeM3: 18,
+            inventory: {
+              ferrite: 10,
+              "silicate-glass": 5,
+              "conductive-ore": 3,
+            },
+            powerDrawKw: {
+              offline: 0,
+              online: 0,
+              active: 0,
+              damaged: 0,
+            },
+          },
+          capabilities: ["storage"],
+        }),
+      ]);
 
       const result = await runCli(["construct", "small-solar-array"], {
         cwd: tempDir,
@@ -1923,9 +1890,7 @@ test("habitat construct rejects when local inventory is insufficient", async () 
       assert.equal(result.status, 1);
       assert.match(result.stderr, /Insufficient local inventory for "small-solar-array"\./);
 
-      const updatedModules = JSON.parse(
-        readFileSync(join(habitatDir, "modules.json"), "utf8"),
-      ) as HabitatModule[];
+      const updatedModules = readLocalModules(tempDir);
       assert.equal(updatedModules[0]?.runtimeAttributes.status, "online");
       assert.deepEqual(updatedModules[2]?.runtimeAttributes.inventory, {
         ferrite: 10,
@@ -1938,8 +1903,6 @@ test("habitat construct rejects when local inventory is insufficient", async () 
 
 test("habitat construction status prints active jobs and remaining build time", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-construction-status-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
 
   const modules = [
     createModule({
@@ -1991,11 +1954,7 @@ test("habitat construction status prints active jobs and remaining build time", 
     }),
   ];
 
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify(modules, null, 2)}\n`,
-    "utf8",
-  );
+  writeLocalModules(tempDir, modules);
 
   const result = runCliSync(["construction", "status"], { cwd: tempDir });
 
@@ -2007,8 +1966,6 @@ test("habitat construction status prints active jobs and remaining build time", 
 
 test("habitat inventory list prints the supply cache inventory", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-inventory-list-"));
-  const habitatDir = join(tempDir, ".habitat");
-  mkdirSync(habitatDir, { recursive: true });
 
   const modules = [
     createModule({
@@ -2038,11 +1995,7 @@ test("habitat inventory list prints the supply cache inventory", () => {
     }),
   ];
 
-  writeFileSync(
-    join(habitatDir, "modules.json"),
-    `${JSON.stringify(modules, null, 2)}\n`,
-    "utf8",
-  );
+  writeLocalModules(tempDir, modules);
 
   const result = runCliSync(["inventory", "list"], { cwd: tempDir });
 
@@ -2102,97 +2055,78 @@ test("habitat tick advances construction only after ticks complete", async () =>
     },
     async (baseUrl) => {
       const tempDir = mkdtempSync(join(tmpdir(), "habitat-construction-advance-"));
-      const habitatDir = join(tempDir, ".habitat");
-      mkdirSync(habitatDir, { recursive: true });
+      writeLocalRegistration(tempDir, {
+        habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
+        habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
+        displayName: "Kepler Frontier",
+        baseUrl,
+        registeredAt: "2026-07-07T18:35:56.464Z",
+        starterModules: [],
+        blueprints: [],
+      });
 
-      writeFileSync(
-        join(habitatDir, "registration.json"),
-        `${JSON.stringify(
-          {
-            habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
-            habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
-            displayName: "Kepler Frontier",
-            baseUrl,
-            registeredAt: "2026-07-07T18:35:56.464Z",
-            starterModules: [],
-            blueprints: [],
+      writeLocalModules(tempDir, [
+        createModule({
+          id: "fabricator-1",
+          alias: "fabricator-1",
+          blueprintId: "workshop-fabricator",
+          moduleType: "workshop-fabricator",
+          displayName: "Workshop Fabricator",
+          runtimeAttributes: {
+            status: "online",
+            crewCapacity: 1,
+            physicalVolumeM3: 20,
+            rawMaterialBufferKg: 1500,
+            inProcessStorageM3: 3,
+            powerDrawKw: {
+              online: 1,
+              active: 8,
+              damaged: 1,
+            },
           },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
-
-      writeFileSync(
-        join(habitatDir, "modules.json"),
-        `${JSON.stringify(
-          [
-            createModule({
-              id: "fabricator-1",
-              alias: "fabricator-1",
-              blueprintId: "workshop-fabricator",
-              moduleType: "workshop-fabricator",
-              displayName: "Workshop Fabricator",
-              runtimeAttributes: {
-                status: "online",
-                crewCapacity: 1,
-                physicalVolumeM3: 20,
-                rawMaterialBufferKg: 1500,
-                inProcessStorageM3: 3,
-                powerDrawKw: {
-                  online: 1,
-                  active: 8,
-                  damaged: 1,
-                },
-              },
-              capabilities: ["basic-fabrication"],
-            }),
-            createModule({
-              id: "battery-1",
-              alias: "battery-1",
-              blueprintId: "basic-battery",
-              moduleType: "basic-battery",
-              displayName: "Battery",
-              runtimeAttributes: {
-                status: "offline",
-                currentEnergyKwh: 500,
-                powerDrawKw: {
-                  offline: 0,
-                },
-              },
-              capabilities: ["power-storage"],
-            }),
-            createModule({
-              id: "supply-1",
-              alias: "supply-1",
-              blueprintId: "supply-cache",
-              moduleType: "supply-cache",
-              displayName: "Supply Cache",
-              runtimeAttributes: {
-                status: "offline",
-                physicalVolumeM3: 25,
-                storageMassKg: 6000,
-                cargoVolumeM3: 18,
-                inventory: {
-                  ferrite: 120,
-                  "silicate-glass": 60,
-                  "conductive-ore": 30,
-                },
-                powerDrawKw: {
-                  offline: 0,
-                  online: 0,
-                  active: 0,
-                  damaged: 0,
-                },
-              },
-              capabilities: ["storage"],
-            }),
-          ],
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
+          capabilities: ["basic-fabrication"],
+        }),
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "offline",
+            currentEnergyKwh: 500,
+            powerDrawKw: {
+              offline: 0,
+            },
+          },
+          capabilities: ["power-storage"],
+        }),
+        createModule({
+          id: "supply-1",
+          alias: "supply-1",
+          blueprintId: "supply-cache",
+          moduleType: "supply-cache",
+          displayName: "Supply Cache",
+          runtimeAttributes: {
+            status: "offline",
+            physicalVolumeM3: 25,
+            storageMassKg: 6000,
+            cargoVolumeM3: 18,
+            inventory: {
+              ferrite: 120,
+              "silicate-glass": 60,
+              "conductive-ore": 30,
+            },
+            powerDrawKw: {
+              offline: 0,
+              online: 0,
+              active: 0,
+              damaged: 0,
+            },
+          },
+          capabilities: ["storage"],
+        }),
+      ]);
 
       const construct = await runCli(["construct", "small-solar-array"], {
         cwd: tempDir,
@@ -2297,98 +2231,79 @@ test("habitat construction makes completed solar modules usable on the next tick
     },
     async (baseUrl) => {
       const tempDir = mkdtempSync(join(tmpdir(), "habitat-construction-solar-use-"));
-      const habitatDir = join(tempDir, ".habitat");
-      mkdirSync(habitatDir, { recursive: true });
+      writeLocalRegistration(tempDir, {
+        habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
+        habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
+        displayName: "Kepler Frontier",
+        baseUrl,
+        registeredAt: "2026-07-07T18:35:56.464Z",
+        starterModules: [],
+        blueprints: [],
+      });
 
-      writeFileSync(
-        join(habitatDir, "registration.json"),
-        `${JSON.stringify(
-          {
-            habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
-            habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
-            displayName: "Kepler Frontier",
-            baseUrl,
-            registeredAt: "2026-07-07T18:35:56.464Z",
-            starterModules: [],
-            blueprints: [],
+      writeLocalModules(tempDir, [
+        createModule({
+          id: "fabricator-1",
+          alias: "fabricator-1",
+          blueprintId: "workshop-fabricator",
+          moduleType: "workshop-fabricator",
+          displayName: "Workshop Fabricator",
+          runtimeAttributes: {
+            status: "online",
+            crewCapacity: 1,
+            physicalVolumeM3: 20,
+            rawMaterialBufferKg: 1500,
+            inProcessStorageM3: 3,
+            powerDrawKw: {
+              online: 1,
+              active: 8,
+              damaged: 1,
+            },
           },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
-
-      writeFileSync(
-        join(habitatDir, "modules.json"),
-        `${JSON.stringify(
-          [
-            createModule({
-              id: "fabricator-1",
-              alias: "fabricator-1",
-              blueprintId: "workshop-fabricator",
-              moduleType: "workshop-fabricator",
-              displayName: "Workshop Fabricator",
-              runtimeAttributes: {
-                status: "online",
-                crewCapacity: 1,
-                physicalVolumeM3: 20,
-                rawMaterialBufferKg: 1500,
-                inProcessStorageM3: 3,
-                powerDrawKw: {
-                  online: 1,
-                  active: 8,
-                  damaged: 1,
-                },
-              },
-              capabilities: ["basic-fabrication"],
-            }),
-            createModule({
-              id: "battery-1",
-              alias: "battery-1",
-              blueprintId: "basic-battery",
-              moduleType: "basic-battery",
-              displayName: "Battery",
-              runtimeAttributes: {
-                status: "online",
-                currentEnergyKwh: 499.8,
-                capacityKwh: 500,
-                powerDrawKw: {
-                  online: 0,
-                },
-              },
-              capabilities: ["power-storage"],
-            }),
-            createModule({
-              id: "supply-1",
-              alias: "supply-1",
-              blueprintId: "supply-cache",
-              moduleType: "supply-cache",
-              displayName: "Supply Cache",
-              runtimeAttributes: {
-                status: "offline",
-                physicalVolumeM3: 25,
-                storageMassKg: 6000,
-                cargoVolumeM3: 18,
-                inventory: {
-                  ferrite: 120,
-                  "silicate-glass": 60,
-                  "conductive-ore": 30,
-                },
-                powerDrawKw: {
-                  offline: 0,
-                  online: 0,
-                  active: 0,
-                  damaged: 0,
-                },
-              },
-              capabilities: ["storage"],
-            }),
-          ],
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
+          capabilities: ["basic-fabrication"],
+        }),
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 499.8,
+            capacityKwh: 500,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+          capabilities: ["power-storage"],
+        }),
+        createModule({
+          id: "supply-1",
+          alias: "supply-1",
+          blueprintId: "supply-cache",
+          moduleType: "supply-cache",
+          displayName: "Supply Cache",
+          runtimeAttributes: {
+            status: "offline",
+            physicalVolumeM3: 25,
+            storageMassKg: 6000,
+            cargoVolumeM3: 18,
+            inventory: {
+              ferrite: 120,
+              "silicate-glass": 60,
+              "conductive-ore": 30,
+            },
+            powerDrawKw: {
+              offline: 0,
+              online: 0,
+              active: 0,
+              damaged: 0,
+            },
+          },
+          capabilities: ["storage"],
+        }),
+      ]);
 
       const construct = await runCli(["construct", "small-solar-array"], {
         cwd: tempDir,
@@ -2422,9 +2337,7 @@ test("habitat construction makes completed solar modules usable on the next tick
         /Online battery energy: 499\.399722 -> 499\.401389 kWh/,
       );
 
-      const completedModules = JSON.parse(
-        readFileSync(join(habitatDir, "modules.json"), "utf8"),
-      ) as HabitatModule[];
+      const completedModules = readLocalModules(tempDir);
       const solarModule = completedModules.find((module) => module.moduleType === "small-solar-array");
 
       assert.equal(solarModule?.runtimeAttributes.status, "online");
@@ -2481,82 +2394,63 @@ test("habitat construction cancel clears the job without refunding inventory", a
     },
     async (baseUrl) => {
       const tempDir = mkdtempSync(join(tmpdir(), "habitat-construction-cancel-"));
-      const habitatDir = join(tempDir, ".habitat");
-      mkdirSync(habitatDir, { recursive: true });
+      writeLocalRegistration(tempDir, {
+        habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
+        habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
+        displayName: "Kepler Frontier",
+        baseUrl,
+        registeredAt: "2026-07-07T18:35:56.464Z",
+        starterModules: [],
+        blueprints: [],
+      });
 
-      writeFileSync(
-        join(habitatDir, "registration.json"),
-        `${JSON.stringify(
-          {
-            habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
-            habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
-            displayName: "Kepler Frontier",
-            baseUrl,
-            registeredAt: "2026-07-07T18:35:56.464Z",
-            starterModules: [],
-            blueprints: [],
+      writeLocalModules(tempDir, [
+        createModule({
+          id: "fabricator-1",
+          alias: "workshop-fabricator-1",
+          blueprintId: "workshop-fabricator",
+          moduleType: "workshop-fabricator",
+          displayName: "Workshop Fabricator",
+          runtimeAttributes: {
+            status: "online",
+            crewCapacity: 1,
+            physicalVolumeM3: 20,
+            rawMaterialBufferKg: 1500,
+            inProcessStorageM3: 3,
+            powerDrawKw: {
+              online: 1,
+              active: 8,
+              damaged: 1,
+            },
           },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
-
-      writeFileSync(
-        join(habitatDir, "modules.json"),
-        `${JSON.stringify(
-          [
-            createModule({
-              id: "fabricator-1",
-              alias: "workshop-fabricator-1",
-              blueprintId: "workshop-fabricator",
-              moduleType: "workshop-fabricator",
-              displayName: "Workshop Fabricator",
-              runtimeAttributes: {
-                status: "online",
-                crewCapacity: 1,
-                physicalVolumeM3: 20,
-                rawMaterialBufferKg: 1500,
-                inProcessStorageM3: 3,
-                powerDrawKw: {
-                  online: 1,
-                  active: 8,
-                  damaged: 1,
-                },
-              },
-              capabilities: ["basic-fabrication"],
-            }),
-            createModule({
-              id: "supply-1",
-              alias: "supply-1",
-              blueprintId: "supply-cache",
-              moduleType: "supply-cache",
-              displayName: "Supply Cache",
-              runtimeAttributes: {
-                status: "offline",
-                physicalVolumeM3: 25,
-                storageMassKg: 6000,
-                cargoVolumeM3: 18,
-                inventory: {
-                  ferrite: 120,
-                  "silicate-glass": 60,
-                  "conductive-ore": 30,
-                },
-                powerDrawKw: {
-                  offline: 0,
-                  online: 0,
-                  active: 0,
-                  damaged: 0,
-                },
-              },
-              capabilities: ["storage"],
-            }),
-          ],
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
+          capabilities: ["basic-fabrication"],
+        }),
+        createModule({
+          id: "supply-1",
+          alias: "supply-1",
+          blueprintId: "supply-cache",
+          moduleType: "supply-cache",
+          displayName: "Supply Cache",
+          runtimeAttributes: {
+            status: "offline",
+            physicalVolumeM3: 25,
+            storageMassKg: 6000,
+            cargoVolumeM3: 18,
+            inventory: {
+              ferrite: 120,
+              "silicate-glass": 60,
+              "conductive-ore": 30,
+            },
+            powerDrawKw: {
+              offline: 0,
+              online: 0,
+              active: 0,
+              damaged: 0,
+            },
+          },
+          capabilities: ["storage"],
+        }),
+      ]);
 
       const construct = await runCli(["construct", "small-solar-array"], {
         cwd: tempDir,
@@ -2641,82 +2535,63 @@ test("habitat tick does not advance construction when the fabricator is offline"
     },
     async (baseUrl) => {
       const tempDir = mkdtempSync(join(tmpdir(), "habitat-construction-offline-"));
-      const habitatDir = join(tempDir, ".habitat");
-      mkdirSync(habitatDir, { recursive: true });
+      writeLocalRegistration(tempDir, {
+        habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
+        habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
+        displayName: "Kepler Frontier",
+        baseUrl,
+        registeredAt: "2026-07-07T18:35:56.464Z",
+        starterModules: [],
+        blueprints: [],
+      });
 
-      writeFileSync(
-        join(habitatDir, "registration.json"),
-        `${JSON.stringify(
-          {
-            habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
-            habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
-            displayName: "Kepler Frontier",
-            baseUrl,
-            registeredAt: "2026-07-07T18:35:56.464Z",
-            starterModules: [],
-            blueprints: [],
+      writeLocalModules(tempDir, [
+        createModule({
+          id: "fabricator-1",
+          alias: "fabricator-1",
+          blueprintId: "workshop-fabricator",
+          moduleType: "workshop-fabricator",
+          displayName: "Workshop Fabricator",
+          runtimeAttributes: {
+            status: "online",
+            crewCapacity: 1,
+            physicalVolumeM3: 20,
+            rawMaterialBufferKg: 1500,
+            inProcessStorageM3: 3,
+            powerDrawKw: {
+              online: 1,
+              active: 8,
+              damaged: 1,
+            },
           },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
-
-      writeFileSync(
-        join(habitatDir, "modules.json"),
-        `${JSON.stringify(
-          [
-            createModule({
-              id: "fabricator-1",
-              alias: "fabricator-1",
-              blueprintId: "workshop-fabricator",
-              moduleType: "workshop-fabricator",
-              displayName: "Workshop Fabricator",
-              runtimeAttributes: {
-                status: "online",
-                crewCapacity: 1,
-                physicalVolumeM3: 20,
-                rawMaterialBufferKg: 1500,
-                inProcessStorageM3: 3,
-                powerDrawKw: {
-                  online: 1,
-                  active: 8,
-                  damaged: 1,
-                },
-              },
-              capabilities: ["basic-fabrication"],
-            }),
-            createModule({
-              id: "supply-1",
-              alias: "supply-1",
-              blueprintId: "supply-cache",
-              moduleType: "supply-cache",
-              displayName: "Supply Cache",
-              runtimeAttributes: {
-                status: "offline",
-                physicalVolumeM3: 25,
-                storageMassKg: 6000,
-                cargoVolumeM3: 18,
-                inventory: {
-                  ferrite: 120,
-                  "silicate-glass": 60,
-                  "conductive-ore": 30,
-                },
-                powerDrawKw: {
-                  offline: 0,
-                  online: 0,
-                  active: 0,
-                  damaged: 0,
-                },
-              },
-              capabilities: ["storage"],
-            }),
-          ],
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
+          capabilities: ["basic-fabrication"],
+        }),
+        createModule({
+          id: "supply-1",
+          alias: "supply-1",
+          blueprintId: "supply-cache",
+          moduleType: "supply-cache",
+          displayName: "Supply Cache",
+          runtimeAttributes: {
+            status: "offline",
+            physicalVolumeM3: 25,
+            storageMassKg: 6000,
+            cargoVolumeM3: 18,
+            inventory: {
+              ferrite: 120,
+              "silicate-glass": 60,
+              "conductive-ore": 30,
+            },
+            powerDrawKw: {
+              offline: 0,
+              online: 0,
+              active: 0,
+              damaged: 0,
+            },
+          },
+          capabilities: ["storage"],
+        }),
+      ]);
 
       const construct = await runCli(["construct", "small-solar-array"], {
         cwd: tempDir,

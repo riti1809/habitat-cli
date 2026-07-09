@@ -1,5 +1,6 @@
 .env
 .habitat/registration.json
 .habitat/modules.json
+.habitat/state.sqlite
 node_modules/
 agents.md
