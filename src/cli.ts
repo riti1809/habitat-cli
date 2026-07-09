@@ -20,12 +20,15 @@ import {
   writeRegistration,
 } from "./habitat-store";
 import {
+  applySolarGeneration,
   formatModulePowerStatusTable,
+  hasSolarGenerationModules,
   getDeclaredModuleState,
   getCurrentPowerDrawKw,
   getEffectiveModuleState,
   runPowerTicks,
 } from "./power-tick";
+import type { SolarIrradiance } from "./kepler-solar";
 import {
   advanceConstructionJobs,
   cancelConstructionJob,
@@ -43,6 +46,7 @@ import {
   type BlueprintSummary,
 } from "./kepler-blueprints";
 import { listResources, type ResourceSummary } from "./kepler-resources";
+import { getSolarIrradiance } from "./kepler-solar";
 
 type RegisterOptions = {
   name: string;
@@ -698,20 +702,57 @@ function printModule(module: HabitatModule) {
   console.log(formatModuleDetails(module));
 }
 
-function runTickCommand(ticksInput: string) {
+async function runTickCommand(ticksInput: string) {
   const ticks = parseTicks(ticksInput);
   const modules = readHydratedModules();
+  let solarIrradiance: SolarIrradiance | undefined;
+  let solarIssueReason: string | undefined;
+
+  if (hasSolarGenerationModules(modules)) {
+    try {
+      solarIrradiance = await getSolarIrradiance();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      solarIssueReason = message.includes("unexpected solar irradiance response")
+        ? "Kepler returned an unexpected solar irradiance response"
+        : `Kepler solar endpoint failed: ${message.replace(/\.$/, "")}`;
+    }
+  }
+
   const result = runPowerTicks(modules, ticks);
-  const constructionResult = advanceConstructionJobs(result.modules, ticks);
+  const solarResult = solarIrradiance
+    ? applySolarGeneration(result.modules, ticks, solarIrradiance)
+    : undefined;
+  const constructionResult = advanceConstructionJobs(
+    solarResult?.modules ?? result.modules,
+    ticks,
+  );
   writeModules(constructionResult.modules);
 
   console.log(`Executed ${result.ticksExecuted} ticks.`);
   console.log(`Power demand: ${result.totalPowerDemandKw} kW`);
   console.log(`Energy consumed: ${formatKwh(result.energyConsumedKwh)} kWh`);
-  console.log(
-    `Battery energy: ${result.batteryEnergyBeforeKwh} -> ${formatKwh(result.batteryEnergyAfterKwh)} kWh`,
-  );
+  console.log(`Battery energy: ${result.batteryEnergyBeforeKwh} -> ${formatKwh(result.batteryEnergyAfterKwh)} kWh`);
   console.log(`Updated ${result.updatedBatteryCount} battery module.`);
+
+  if (solarResult) {
+    console.log(`Solar generation: ${formatKwh(solarResult.grossGeneratedKwh)} kWh`);
+    console.log(`Solar charged: ${formatKwh(solarResult.storedKwh)} kWh`);
+    console.log(
+      `Online battery energy: ${formatKwh(solarResult.batteryEnergyBeforeKwh)} -> ${formatKwh(solarResult.batteryEnergyAfterKwh)} kWh`,
+    );
+    console.log(`Updated ${solarResult.updatedBatteryCount} online battery module${solarResult.updatedBatteryCount === 1 ? "" : "s"}.`);
+
+    if (solarResult.storedKwh === 0) {
+      console.log(
+        `No solar charging happened: ${solarResult.noChargingReason ?? "no charge was stored"}.`,
+      );
+    }
+  } else if (solarIssueReason) {
+    console.log(`No solar charging happened: ${solarIssueReason}.`);
+  } else {
+    console.log("No solar charging happened: no solar modules are available.");
+  }
 
   if (constructionResult.completedModuleIds.length > 0) {
     console.log(
@@ -817,6 +858,21 @@ function formatBlueprintTable(blueprints: BlueprintSummary[]) {
   ].join("\n");
 }
 
+function formatSolarCondition(condition: string) {
+  switch (condition) {
+    case "clear":
+      return "Clear skies, good for solar generation.";
+    case "dust":
+      return "Dust is dimming the sunlight.";
+    case "storm":
+      return "A storm is blocking much of the sunlight.";
+    case "night":
+      return "It is night, so sunlight is unavailable.";
+    default:
+      return `Unknown condition: ${condition}`;
+  }
+}
+
 function formatBlueprintDetail(blueprint: BlueprintDetail) {
   const lines = [
     `Blueprint ID: ${blueprint.blueprintId}`,
@@ -900,6 +956,9 @@ const blueprintCommand = program
 const resourceCommand = program
   .command("resource")
   .description("Inspect official Kepler resource catalog entries.");
+const solarCommand = program
+  .command("solar")
+  .description("Inspect the current solar irradiance reading.");
 const constructionCommand = program
   .command("construction")
   .description("Inspect active construction jobs.");
@@ -937,6 +996,7 @@ Commands:
   habitat blueprint list
   habitat blueprint show <blueprint-id>
   habitat resource list
+  habitat solar status
   habitat construction status
   habitat construction cancel <fabricator-id-or-alias>
   habitat inventory list
@@ -981,6 +1041,16 @@ They describe possible resource types in the Kepler world, not your local invent
 
 Examples:
   habitat resource list
+`,
+);
+
+solarCommand.addHelpText(
+  "after",
+  `
+This command reads Kepler's current solar irradiance and describes it in plain language.
+
+Examples:
+  habitat solar status
 `,
 );
 
@@ -1096,7 +1166,7 @@ program
   .description("Advance the local habitat simulation by a number of power ticks.")
   .argument("[ticks]", "Number of one-second ticks to execute")
   .option("--ticks <ticks>", "Number of one-second ticks to execute")
-  .action((ticksArgument: string | undefined, options: TickOptions) => {
+  .action(async (ticksArgument: string | undefined, options: TickOptions) => {
     try {
       const ticksInput = ticksArgument ?? options.ticks;
 
@@ -1104,7 +1174,7 @@ program
         throw new Error("Provide ticks as a positional argument or with --ticks.");
       }
 
-      runTickCommand(ticksInput);
+      await runTickCommand(ticksInput);
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1198,6 +1268,20 @@ resourceCommand
         "Resource catalog entries are possible resource types in the Kepler world, not local inventory.",
       );
       console.log(formatResourceTable(await listResources()));
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+solarCommand
+  .command("status")
+  .description("Show the current solar irradiance and condition.")
+  .action(async () => {
+    try {
+      const solarIrradiance = await getSolarIrradiance();
+      console.log(`Current solar irradiance: ${solarIrradiance.wPerM2} W/m2`);
+      console.log(`Condition: ${formatSolarCondition(solarIrradiance.condition)}`);
     } catch (error) {
       printError(error);
       process.exit(1);

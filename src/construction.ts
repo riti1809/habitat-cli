@@ -236,7 +236,7 @@ function createCompletedModule(
 
   return {
     id: job.outputModuleId,
-    alias: job.outputModuleId,
+    alias: job.outputModuleType,
     blueprintId: job.blueprintId,
     moduleType: job.outputModuleType,
     displayName: toDisplayName(job.outputModuleType),

@@ -8,9 +8,11 @@ import { spawn, spawnSync } from "node:child_process";
 
 import type { HabitatModule } from "../src/habitat-store.ts";
 import {
+  applySolarGeneration,
   formatModulePowerStatusTable,
   runPowerTicks,
 } from "../src/power-tick.ts";
+import { getSolarIrradiance } from "../src/kepler-solar.ts";
 
 function createModule(overrides: Partial<HabitatModule>): HabitatModule {
   return {
@@ -696,6 +698,634 @@ test("habitat module set-status rejects invalid statuses", () => {
     result.stderr,
     /Status must be one of: offline, idle, online, active, damaged\./,
   );
+});
+
+test("getSolarIrradiance reads the public world endpoint", async () => {
+  await withMockKepler(
+    {
+      "/world/solar-irradiance": {
+        status: 200,
+        body: {
+          solarIrradiance: {
+            wPerM2: 900,
+            condition: "clear",
+          },
+        },
+      },
+    },
+    async (baseUrl) => {
+      const solarIrradiance = await getSolarIrradiance(baseUrl);
+
+      assert.deepEqual(solarIrradiance, {
+        wPerM2: 900,
+        condition: "clear",
+      });
+    },
+  );
+});
+
+test("habitat solar status prints readable solar conditions", async () => {
+  await withMockKepler(
+    {
+      "/world/solar-irradiance": {
+        status: 200,
+        body: {
+          solarIrradiance: {
+            wPerM2: 735,
+            condition: "dust",
+          },
+        },
+      },
+    },
+    async (baseUrl) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "habitat-solar-status-"));
+
+      const result = await runCli(["solar", "status"], {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          KEPLER_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Current solar irradiance: 735 W\/m2/);
+      assert.match(result.stdout, /Condition: Dust is dimming the sunlight\./);
+    },
+  );
+});
+
+test("applySolarGeneration charges only online batteries up to their headroom", () => {
+  const offlineBattery = createModule({
+    id: "battery-1",
+    alias: "battery-1",
+    blueprintId: "basic-battery",
+    moduleType: "basic-battery",
+    displayName: "Offline Battery",
+    runtimeAttributes: {
+      status: "offline",
+      currentEnergyKwh: 499.8,
+      capacityKwh: 500,
+      powerDrawKw: {
+        offline: 0,
+      },
+    },
+  });
+
+  const onlineBattery = createModule({
+    id: "battery-2",
+    alias: "battery-2",
+    blueprintId: "basic-battery",
+    moduleType: "basic-battery",
+    displayName: "Online Battery",
+    runtimeAttributes: {
+      status: "online",
+      currentEnergyKwh: 99.9,
+      capacityKwh: 100,
+      powerDrawKw: {
+        online: 0,
+      },
+    },
+  });
+
+  const solarPanel = createModule({
+    id: "solar-1",
+    alias: "solar-1",
+    blueprintId: "small-solar-array",
+    moduleType: "small-solar-array",
+    displayName: "Small Solar Array",
+    runtimeAttributes: {
+      status: "online",
+      powerGenerationKw: 12,
+      powerDrawKw: {
+        online: 0,
+      },
+    },
+    capabilities: ["solar-generation"],
+  });
+
+  const result = applySolarGeneration(
+    [offlineBattery, onlineBattery, solarPanel],
+    60,
+    {
+      wPerM2: 900,
+      condition: "clear",
+    },
+    {
+      now: "2026-07-09T00:00:00.000Z",
+    },
+  );
+
+  assert.equal(result.effectiveGenerationKw, 6);
+  assert.equal(result.solarMultiplier, 1);
+  assert.equal(result.solarEfficiency, 0.5);
+  assert.equal(result.generatedKwhPerTick, 12 * 1 * 0.5 / 3600);
+  assert.ok(Math.abs(result.grossGeneratedKwh - 0.1) < 1e-12);
+  assert.ok(Math.abs(result.batteryHeadroomKwh - 0.1) < 1e-12);
+  assert.ok(Math.abs(result.storedKwh - 0.1) < 1e-12);
+  assert.equal(result.updatedBatteryCount, 1);
+  assert.equal(result.modules[0]?.runtimeAttributes.currentEnergyKwh, 499.8);
+  assert.equal(result.modules[1]?.runtimeAttributes.currentEnergyKwh, 100);
+  assert.equal(result.modules[1]?.updatedAt, "2026-07-09T00:00:00.000Z");
+});
+
+test("habitat tick fetches solar irradiance and stores generated energy", async () => {
+  await withMockKepler(
+    {
+      "/world/solar-irradiance": {
+        status: 200,
+        body: {
+          solarIrradiance: {
+            wPerM2: 900,
+            condition: "clear",
+          },
+        },
+      },
+    },
+    async (baseUrl) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "habitat-solar-tick-"));
+      const habitatDir = join(tempDir, ".habitat");
+      mkdirSync(habitatDir, { recursive: true });
+
+      const modules = [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 499.8,
+            capacityKwh: 500,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+        }),
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "online",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ];
+
+      writeFileSync(
+        join(habitatDir, "modules.json"),
+        `${JSON.stringify(modules, null, 2)}\n`,
+        "utf8",
+      );
+
+      const result = await runCli(["tick", "180"], {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          KEPLER_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Executed 180 ticks\./);
+      assert.match(result.stdout, /Solar generation: 0\.300000 kWh/);
+      assert.match(result.stdout, /Solar charged: 0\.200000 kWh/);
+      assert.match(result.stdout, /Online battery energy: 499\.800000 -> 500\.000000 kWh/);
+      assert.doesNotMatch(result.stdout, /No solar charging happened:/);
+
+      const updatedModules = JSON.parse(
+        readFileSync(join(habitatDir, "modules.json"), "utf8"),
+      ) as HabitatModule[];
+
+      assert.equal(updatedModules[0]?.runtimeAttributes.currentEnergyKwh, 500);
+    },
+  );
+});
+
+test("habitat tick reports why no solar charging happened when no solar modules are online", async () => {
+  await withMockKepler(
+    {
+      "/world/solar-irradiance": {
+        status: 200,
+        body: {
+          solarIrradiance: {
+            wPerM2: 900,
+            condition: "clear",
+          },
+        },
+      },
+    },
+    async (baseUrl) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "habitat-solar-no-charge-"));
+      const habitatDir = join(tempDir, ".habitat");
+      mkdirSync(habitatDir, { recursive: true });
+
+      const modules = [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 50,
+            capacityKwh: 100,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+        }),
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "offline",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              offline: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ];
+
+      writeFileSync(
+        join(habitatDir, "modules.json"),
+        `${JSON.stringify(modules, null, 2)}\n`,
+        "utf8",
+      );
+
+      const result = await runCli(["tick", "60"], {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          KEPLER_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(
+        result.stdout,
+        /No solar charging happened: no online solar modules are available\./,
+      );
+
+      const updatedModules = JSON.parse(
+        readFileSync(join(habitatDir, "modules.json"), "utf8"),
+      ) as HabitatModule[];
+
+      assert.equal(updatedModules[0]?.runtimeAttributes.currentEnergyKwh, 50);
+    },
+  );
+});
+
+test("habitat tick explains every solar charging blocker", async () => {
+  const scenarios = [
+    {
+      name: "no solar panel exists",
+      modules: [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 50,
+            capacityKwh: 100,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+        }),
+      ],
+      expectedReason: "no solar modules are available",
+    },
+    {
+      name: "solar panel exists but is offline",
+      modules: [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 50,
+            capacityKwh: 100,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+        }),
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "offline",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              offline: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ],
+      solarResponse: {
+        solarIrradiance: {
+          wPerM2: 900,
+          condition: "clear",
+        },
+      },
+      expectedReason: "no online solar modules are available",
+    },
+    {
+      name: "no battery exists",
+      modules: [
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "online",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ],
+      solarResponse: {
+        solarIrradiance: {
+          wPerM2: 900,
+          condition: "clear",
+        },
+      },
+      expectedReason: "no battery modules are available",
+    },
+    {
+      name: "battery exists but is offline",
+      modules: [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "offline",
+            currentEnergyKwh: 50,
+            capacityKwh: 100,
+            powerDrawKw: {
+              offline: 0,
+            },
+          },
+        }),
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "online",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ],
+      solarResponse: {
+        solarIrradiance: {
+          wPerM2: 900,
+          condition: "clear",
+        },
+      },
+      expectedReason: "no online battery modules are available",
+    },
+    {
+      name: "irradiance is zero",
+      modules: [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 50,
+            capacityKwh: 100,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+        }),
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "online",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ],
+      solarResponse: {
+        solarIrradiance: {
+          wPerM2: 0,
+          condition: "night",
+        },
+      },
+      expectedReason: "solar irradiance is 0 W/m2",
+    },
+    {
+      name: "irradiance is missing",
+      modules: [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 50,
+            capacityKwh: 100,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+        }),
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "online",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ],
+      solarResponse: {},
+      expectedReason: "Kepler returned an unexpected solar irradiance response",
+    },
+    {
+      name: "battery is already full",
+      modules: [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 100,
+            capacityKwh: 100,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+        }),
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "online",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ],
+      solarResponse: {
+        solarIrradiance: {
+          wPerM2: 900,
+          condition: "clear",
+        },
+      },
+      expectedReason: "online batteries are already at capacity",
+    },
+    {
+      name: "Kepler solar endpoint fails",
+      modules: [
+        createModule({
+          id: "battery-1",
+          alias: "battery-1",
+          blueprintId: "basic-battery",
+          moduleType: "basic-battery",
+          displayName: "Battery",
+          runtimeAttributes: {
+            status: "online",
+            currentEnergyKwh: 50,
+            capacityKwh: 100,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+        }),
+        createModule({
+          id: "solar-1",
+          alias: "solar-1",
+          blueprintId: "small-solar-array",
+          moduleType: "small-solar-array",
+          displayName: "Small Solar Array",
+          runtimeAttributes: {
+            status: "online",
+            powerGenerationKw: 12,
+            powerDrawKw: {
+              online: 0,
+            },
+          },
+          capabilities: ["solar-generation"],
+        }),
+      ],
+      solarHttpStatus: 503,
+      solarResponse: {
+        error: {
+          message: "Solar service unavailable.",
+        },
+      },
+      expectedReason: "Kepler solar endpoint failed: Solar service unavailable",
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    await withMockKepler(
+      scenario.solarResponse === undefined
+        ? {}
+        : {
+            "/world/solar-irradiance": {
+              status: scenario.solarHttpStatus ?? 200,
+              body: scenario.solarResponse,
+            },
+          },
+      async (baseUrl) => {
+        const tempDir = mkdtempSync(join(tmpdir(), `habitat-solar-${scenario.name}-`));
+        const habitatDir = join(tempDir, ".habitat");
+        mkdirSync(habitatDir, { recursive: true });
+
+        writeFileSync(
+          join(habitatDir, "modules.json"),
+          `${JSON.stringify(scenario.modules, null, 2)}\n`,
+          "utf8",
+        );
+
+        const result = await runCli(["tick", "60"], {
+          cwd: tempDir,
+          env: {
+            ...process.env,
+            KEPLER_BASE_URL: baseUrl,
+          },
+        });
+
+        assert.equal(result.status, 0, `${scenario.name}: ${result.stderr}`);
+        assert.match(
+          result.stdout,
+          new RegExp(`No solar charging happened: ${scenario.expectedReason.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.`),
+        );
+      },
+    );
+  }
 });
 
 test("habitat blueprint list prints a concise blueprint table", async () => {
@@ -1595,7 +2225,7 @@ test("habitat tick advances construction only after ticks complete", async () =>
       assert.equal(moduleList.status, 0, moduleList.stderr);
       assert.match(
         moduleList.stdout,
-        /small-solar-array-1 \| type: small-solar-array \| name: Small Solar Array \| status: online \| health: 100/,
+        /small-solar-array \| type: small-solar-array \| name: Small Solar Array \| status: online \| health: 100/,
       );
 
       const moduleShow = await runCli(["module", "show", "small-solar-array-1"], {
@@ -1605,6 +2235,201 @@ test("habitat tick advances construction only after ticks complete", async () =>
       assert.match(moduleShow.stdout, /Type: small-solar-array/);
       assert.match(moduleShow.stdout, /Name: Small Solar Array/);
       assert.match(moduleShow.stdout, /Construction status: built/);
+    },
+  );
+});
+
+test("habitat construction makes completed solar modules usable on the next tick", async () => {
+  await withMockKepler(
+    {
+      "/catalog/blueprints/small-solar-array": {
+        status: 200,
+        body: {
+          blueprint: {
+            id: "blueprint_kepler-442b-v1_small-solar-array",
+            blueprintId: "small-solar-array",
+            displayName: "Small Solar Array Blueprint",
+            description: "Generates starter solar power during clear daylight, with reduced output during dust accumulation and storm conditions.",
+            output: {
+              itemType: "module",
+              moduleType: "small-solar-array",
+              quantity: 1,
+            },
+            inputs: {
+              ferrite: 90,
+              "silicate-glass": 45,
+              "conductive-ore": 18,
+            },
+            requiredFacility: {
+              moduleType: "workshop-fabricator",
+              minimumLevel: 1,
+            },
+            buildTicks: 180,
+            repeatable: true,
+            runtimeAttributes: {
+              health: 100,
+              status: "online",
+              crewCapacity: 0,
+              powerDrawKw: {
+                offline: 0,
+                online: 0,
+                active: 0,
+                damaged: 0,
+              },
+              powerGenerationKw: 12,
+              degradedStormGenerationKw: 3,
+              maintenanceHoursPer100Ticks: 4,
+              surfaceAreaM2: 28,
+            },
+            capabilities: ["solar-generation"],
+          },
+        },
+      },
+      "/world/solar-irradiance": {
+        status: 200,
+        body: {
+          solarIrradiance: {
+            wPerM2: 900,
+            condition: "clear",
+          },
+        },
+      },
+    },
+    async (baseUrl) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "habitat-construction-solar-use-"));
+      const habitatDir = join(tempDir, ".habitat");
+      mkdirSync(habitatDir, { recursive: true });
+
+      writeFileSync(
+        join(habitatDir, "registration.json"),
+        `${JSON.stringify(
+          {
+            habitatUuid: "dea23d87-6938-4338-a868-f351f633dc62",
+            habitatId: "habitat_dea23d87_6938_4338_a868_f351f633dc62",
+            displayName: "Kepler Frontier",
+            baseUrl,
+            registeredAt: "2026-07-07T18:35:56.464Z",
+            starterModules: [],
+            blueprints: [],
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      writeFileSync(
+        join(habitatDir, "modules.json"),
+        `${JSON.stringify(
+          [
+            createModule({
+              id: "fabricator-1",
+              alias: "fabricator-1",
+              blueprintId: "workshop-fabricator",
+              moduleType: "workshop-fabricator",
+              displayName: "Workshop Fabricator",
+              runtimeAttributes: {
+                status: "online",
+                crewCapacity: 1,
+                physicalVolumeM3: 20,
+                rawMaterialBufferKg: 1500,
+                inProcessStorageM3: 3,
+                powerDrawKw: {
+                  online: 1,
+                  active: 8,
+                  damaged: 1,
+                },
+              },
+              capabilities: ["basic-fabrication"],
+            }),
+            createModule({
+              id: "battery-1",
+              alias: "battery-1",
+              blueprintId: "basic-battery",
+              moduleType: "basic-battery",
+              displayName: "Battery",
+              runtimeAttributes: {
+                status: "online",
+                currentEnergyKwh: 499.8,
+                capacityKwh: 500,
+                powerDrawKw: {
+                  online: 0,
+                },
+              },
+              capabilities: ["power-storage"],
+            }),
+            createModule({
+              id: "supply-1",
+              alias: "supply-1",
+              blueprintId: "supply-cache",
+              moduleType: "supply-cache",
+              displayName: "Supply Cache",
+              runtimeAttributes: {
+                status: "offline",
+                physicalVolumeM3: 25,
+                storageMassKg: 6000,
+                cargoVolumeM3: 18,
+                inventory: {
+                  ferrite: 120,
+                  "silicate-glass": 60,
+                  "conductive-ore": 30,
+                },
+                powerDrawKw: {
+                  offline: 0,
+                  online: 0,
+                  active: 0,
+                  damaged: 0,
+                },
+              },
+              capabilities: ["storage"],
+            }),
+          ],
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      const construct = await runCli(["construct", "small-solar-array"], {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          KEPLER_BASE_URL: baseUrl,
+          KEPLER_PLANET_TOKEN: "test-token",
+        },
+      });
+
+      assert.equal(construct.status, 0, construct.stderr);
+
+      const completionTick = await runCli(["tick", "180"], { cwd: tempDir });
+      assert.equal(completionTick.status, 0, completionTick.stderr);
+      assert.match(completionTick.stdout, /Completed construction: small-solar-array-1/);
+      assert.doesNotMatch(completionTick.stdout, /Solar generation:/);
+
+      const solarTick = await runCli(["tick", "1"], {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          KEPLER_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(solarTick.status, 0, solarTick.stderr);
+      assert.match(solarTick.stdout, /Solar generation: 0\.001667 kWh/);
+      assert.match(solarTick.stdout, /Solar charged: 0\.001667 kWh/);
+      assert.match(
+        solarTick.stdout,
+        /Online battery energy: 499\.399722 -> 499\.401389 kWh/,
+      );
+
+      const completedModules = JSON.parse(
+        readFileSync(join(habitatDir, "modules.json"), "utf8"),
+      ) as HabitatModule[];
+      const solarModule = completedModules.find((module) => module.moduleType === "small-solar-array");
+
+      assert.equal(solarModule?.runtimeAttributes.status, "online");
+      assert.equal(solarModule?.runtimeAttributes.powerGenerationKw, 12);
+      assert.deepEqual(solarModule?.capabilities, ["solar-generation"]);
     },
   );
 });
