@@ -14,6 +14,7 @@ export type BlueprintDetail = BlueprintSummary & {
   prerequisites?: string[];
   unlocks?: string[];
   capabilities?: string[];
+  runtimeAttributes?: Record<string, unknown>;
 };
 
 type BlueprintCatalogResponse = {

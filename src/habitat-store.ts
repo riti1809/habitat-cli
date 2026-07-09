@@ -54,6 +54,19 @@ export type HabitatModule = {
   source: "kepler-registration" | "local";
   createdAt: string;
   updatedAt: string;
+  constructionJob?: ConstructionJob;
+};
+
+export type ConstructionJob = {
+  blueprintId: string;
+  outputModuleId: string;
+  outputModuleType: string;
+  buildTicks: number;
+  remainingTicks: number;
+  requiredResources: Record<string, number>;
+  futureRuntimeAttributes: Record<string, unknown>;
+  futureCapabilities: string[];
+  startedAt: string;
 };
 
 export type HabitatStatus = {
@@ -164,7 +177,26 @@ function isHabitatModule(value: unknown): value is HabitatModule {
     value.constructionStatus === "built" &&
     (value.source === "kepler-registration" || value.source === "local") &&
     typeof value.createdAt === "string" &&
-    typeof value.updatedAt === "string"
+    typeof value.updatedAt === "string" &&
+    (value.constructionJob === undefined || isConstructionJob(value.constructionJob))
+  );
+}
+
+function isConstructionJob(value: unknown): value is ConstructionJob {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.blueprintId === "string" &&
+    typeof value.outputModuleId === "string" &&
+    typeof value.outputModuleType === "string" &&
+    typeof value.buildTicks === "number" &&
+    typeof value.remainingTicks === "number" &&
+    isRecord(value.requiredResources) &&
+    isRecord(value.futureRuntimeAttributes) &&
+    isStringArray(value.futureCapabilities) &&
+    typeof value.startedAt === "string"
   );
 }
 
@@ -221,7 +253,8 @@ function normalizeModules(value: unknown): HabitatModule[] | undefined {
         module.constructionStatus === "built" &&
         (module.source === "kepler-registration" || module.source === "local") &&
         typeof module.createdAt === "string" &&
-        typeof module.updatedAt === "string"
+        typeof module.updatedAt === "string" &&
+        (module.constructionJob === undefined || isConstructionJob(module.constructionJob))
       );
     },
   );

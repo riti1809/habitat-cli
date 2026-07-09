@@ -21,9 +21,21 @@ import {
 } from "./habitat-store";
 import {
   formatModulePowerStatusTable,
+  getDeclaredModuleState,
   getCurrentPowerDrawKw,
+  getEffectiveModuleState,
   runPowerTicks,
 } from "./power-tick";
+import {
+  advanceConstructionJobs,
+  cancelConstructionJob,
+  formatConstructionStatusTable,
+  startConstruction,
+} from "./construction";
+import {
+  addSupplyCacheInventory,
+  formatInventoryTable,
+} from "./habitat-inventory";
 import {
   getBlueprint,
   listBlueprints,
@@ -62,7 +74,12 @@ const allowedModuleStatuses = [
 type AllowedModuleStatus = (typeof allowedModuleStatuses)[number];
 
 type TickOptions = {
-  ticks: string;
+  ticks?: string;
+};
+
+type InventoryAddOptions = {
+  resourceType: string;
+  quantity: string;
 };
 
 type KeplerErrorResponse = {
@@ -203,6 +220,16 @@ function parseTicks(value: string) {
   }
 
   return ticks;
+}
+
+function parseQuantity(value: string) {
+  const quantity = Number(value);
+
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new Error("Quantity must be a positive integer.");
+  }
+
+  return quantity;
 }
 
 function formatKwh(value: number) {
@@ -525,6 +552,11 @@ function getModuleHealth(module: HabitatModule) {
   return typeof health === "number" ? String(health) : "unknown";
 }
 
+function getRuntimeNumber(module: HabitatModule, key: string) {
+  const value = module.runtimeAttributes[key];
+  return typeof value === "number" ? value : undefined;
+}
+
 function printModuleList(modules: HabitatModule[]) {
   if (modules.length === 0) {
     console.log("No modules found.");
@@ -539,15 +571,139 @@ function printModuleList(modules: HabitatModule[]) {
   }
 }
 
-function printModule(module: HabitatModule) {
-  console.log(JSON.stringify(module, null, 2));
+function formatRuntimeAttributes(module: HabitatModule) {
+  const lines: string[] = [];
+
+  if (module.runtimeAttributes.status !== undefined) {
+    lines.push(`Declared status: ${String(module.runtimeAttributes.status)}`);
+  }
+
+  lines.push(`Effective status: ${getEffectiveModuleState(module)}`);
+
+  const health = getRuntimeNumber(module, "health");
+  if (health !== undefined) {
+    lines.push(`Health: ${health}`);
+  }
+
+  const powerDrawKw = module.runtimeAttributes.powerDrawKw;
+  if (powerDrawKw && typeof powerDrawKw === "object") {
+    lines.push("Power draw:");
+    for (const [state, draw] of Object.entries(powerDrawKw)) {
+      if (typeof draw === "number") {
+        lines.push(`  ${state}: ${draw} kW`);
+      }
+    }
+  }
+
+  const remainingEntries = Object.entries(module.runtimeAttributes).filter(
+    ([key]) => key !== "status" && key !== "powerDrawKw",
+  );
+
+  if (remainingEntries.length > 0) {
+    lines.push("Attributes:");
+    for (const [key, value] of remainingEntries) {
+      const formattedValue =
+        typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value);
+      lines.push(`  ${key}: ${formattedValue}`);
+    }
+  }
+
+  return lines;
 }
 
-function runTickCommand(options: TickOptions) {
-  const ticks = parseTicks(options.ticks);
+function formatBatteryDetails(module: HabitatModule) {
+  const lines: string[] = [];
+
+  const currentEnergyKwh = getRuntimeNumber(module, "currentEnergyKwh");
+  const capacityKwh = getRuntimeNumber(module, "capacityKwh");
+  const reserveKwh = getRuntimeNumber(module, "reserveKwh");
+  const maxOutputKw = getRuntimeNumber(module, "maxOutputKw");
+
+  if (currentEnergyKwh !== undefined) {
+    lines.push(`Current energy: ${currentEnergyKwh} kWh`);
+  }
+
+  if (capacityKwh !== undefined) {
+    lines.push(`Capacity: ${capacityKwh} kWh`);
+  }
+
+  if (reserveKwh !== undefined) {
+    lines.push(`Reserve: ${reserveKwh} kWh`);
+  }
+
+  if (maxOutputKw !== undefined) {
+    lines.push(`Max output: ${maxOutputKw} kW`);
+  }
+
+  return lines;
+}
+
+function formatConstructionJobDetails(module: HabitatModule) {
+  const job = module.constructionJob;
+
+  if (!job) {
+    return [];
+  }
+
+  return [
+    `Blueprint: ${job.blueprintId}`,
+    `Output module: ${job.outputModuleId}`,
+    `Build ticks: ${job.buildTicks}`,
+    `Remaining ticks: ${job.remainingTicks}`,
+    `Started at: ${job.startedAt}`,
+  ];
+}
+
+function appendTextSection(lines: string[], title: string, entries: string[]) {
+  if (entries.length === 0) {
+    return;
+  }
+
+  lines.push(`${title}:`);
+  for (const entry of entries) {
+    lines.push(`  ${entry}`);
+  }
+}
+
+function formatModuleDetails(module: HabitatModule) {
+  const lines = [
+    `Module ID: ${module.id}`,
+    `Alias: ${module.alias}`,
+    `Type: ${module.moduleType}`,
+    `Name: ${module.displayName}`,
+    `Construction status: ${module.constructionStatus}`,
+    `Source: ${module.source}`,
+    `Declared state: ${getDeclaredModuleState(module)}`,
+    `Effective state: ${getEffectiveModuleState(module)}`,
+  ];
+
+  appendTextSection(lines, "Runtime Attributes", formatRuntimeAttributes(module));
+
+  if (module.moduleType === "basic-battery") {
+    appendTextSection(lines, "Battery", formatBatteryDetails(module));
+  }
+
+  if (module.constructionJob) {
+    appendTextSection(lines, "Construction Job", formatConstructionJobDetails(module));
+  }
+
+  formatSection(lines, "Capabilities", module.capabilities);
+
+  return lines.join("\n");
+}
+
+function printModule(module: HabitatModule) {
+  console.log(formatModuleDetails(module));
+}
+
+function runTickCommand(ticksInput: string) {
+  const ticks = parseTicks(ticksInput);
   const modules = readHydratedModules();
   const result = runPowerTicks(modules, ticks);
-  writeModules(result.modules);
+  const constructionResult = advanceConstructionJobs(result.modules, ticks);
+  writeModules(constructionResult.modules);
 
   console.log(`Executed ${result.ticksExecuted} ticks.`);
   console.log(`Power demand: ${result.totalPowerDemandKw} kW`);
@@ -556,6 +712,12 @@ function runTickCommand(options: TickOptions) {
     `Battery energy: ${result.batteryEnergyBeforeKwh} -> ${formatKwh(result.batteryEnergyAfterKwh)} kWh`,
   );
   console.log(`Updated ${result.updatedBatteryCount} battery module.`);
+
+  if (constructionResult.completedModuleIds.length > 0) {
+    console.log(
+      `Completed construction: ${constructionResult.completedModuleIds.join(", ")}`,
+    );
+  }
 }
 
 function formatYesNo(value: boolean | undefined) {
@@ -738,6 +900,12 @@ const blueprintCommand = program
 const resourceCommand = program
   .command("resource")
   .description("Inspect official Kepler resource catalog entries.");
+const constructionCommand = program
+  .command("construction")
+  .description("Inspect active construction jobs.");
+const inventoryCommand = program
+  .command("inventory")
+  .description("Manage the supply cache inventory stored on the local habitat.");
 
 program
   .name("habitat")
@@ -769,7 +937,12 @@ Commands:
   habitat blueprint list
   habitat blueprint show <blueprint-id>
   habitat resource list
-  habitat tick --ticks <ticks>
+  habitat construction status
+  habitat construction cancel <fabricator-id-or-alias>
+  habitat inventory list
+  habitat inventory add <resource-type> <quantity>
+  habitat construct <blueprint-id>
+  habitat tick <ticks>
 `,
 );
 
@@ -811,13 +984,127 @@ Examples:
 `,
 );
 
+inventoryCommand
+  .command("add")
+  .description("Add resources to the supply cache inventory.")
+  .argument("<resource-type>", "Resource type")
+  .argument("<quantity>", "Quantity to add")
+  .action((resourceType: string, quantity: string) => {
+    try {
+      const result = addSupplyCacheInventory(
+        readHydratedModules(),
+        resourceType,
+        parseQuantity(quantity),
+      );
+
+      writeModules(result.modules);
+      console.log(
+        `Supply cache inventory updated: ${resourceType} = ${result.inventory[resourceType]}`,
+      );
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+inventoryCommand.addHelpText(
+  "after",
+  `
+Inventory is stored on the supply-cache module in .habitat/modules.json.
+
+Examples:
+  habitat inventory list
+  habitat inventory add ferrite 90
+`,
+);
+
+constructionCommand.addHelpText(
+  "after",
+  `
+Shows construction jobs stored on fabricator records.
+
+Examples:
+  habitat construction status
+  habitat construction cancel workshop-fabricator-1
+`,
+);
+
+program
+  .command("construct")
+  .description("Start a local construction job for a Kepler blueprint.")
+  .argument("<blueprint-id>", "Blueprint ID")
+  .action(async (blueprintId: string) => {
+    try {
+      const result = await startConstruction(blueprintId);
+      const job = result.fabricator.constructionJob;
+
+      console.log(`Started construction of "${result.blueprint.blueprintId}".`);
+      console.log(`Fabricator: ${result.fabricator.alias}`);
+      console.log(`Output module ID: ${job?.outputModuleId}`);
+      console.log(`Build ticks: ${job?.buildTicks}`);
+      console.log(`Remaining ticks: ${job?.remainingTicks}`);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+constructionCommand
+  .command("status")
+  .description("Show active construction jobs and remaining build time.")
+  .action(() => {
+    try {
+      console.log(formatConstructionStatusTable(readHydratedModules()));
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+constructionCommand
+  .command("cancel")
+  .description("Cancel one active construction job.")
+  .argument("<fabricator-id-or-alias>", "Fabricator ID or alias")
+  .action((moduleId: string) => {
+    try {
+      const result = cancelConstructionJob(readHydratedModules(), moduleId);
+      writeModules(result.modules);
+      console.log(
+        `Cancelled construction job for ${result.fabricatorAlias}. No materials were refunded.`,
+      );
+      console.log(`Cancelled blueprint: ${result.cancelledBlueprintId}`);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+inventoryCommand
+  .command("list")
+  .description("Show the supply cache inventory.")
+  .action(() => {
+    try {
+      console.log(formatInventoryTable(readHydratedModules()));
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
 program
   .command("tick")
   .description("Advance the local habitat simulation by a number of power ticks.")
-  .requiredOption("--ticks <ticks>", "Number of one-second ticks to execute")
-  .action((options: TickOptions) => {
+  .argument("[ticks]", "Number of one-second ticks to execute")
+  .option("--ticks <ticks>", "Number of one-second ticks to execute")
+  .action((ticksArgument: string | undefined, options: TickOptions) => {
     try {
-      runTickCommand(options);
+      const ticksInput = ticksArgument ?? options.ticks;
+
+      if (!ticksInput) {
+        throw new Error("Provide ticks as a positional argument or with --ticks.");
+      }
+
+      runTickCommand(ticksInput);
     } catch (error) {
       printError(error);
       process.exit(1);

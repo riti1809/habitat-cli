@@ -16,7 +16,8 @@ type RunPowerTicksOptions = {
 
 type ModulePowerStatus = {
   moduleName: string;
-  state: string;
+  declaredState: string;
+  effectiveState: string;
   powerDrawKw: number;
 };
 
@@ -37,6 +38,18 @@ function getRuntimeStatus(module: HabitatModule): string | undefined {
 
 export function getCurrentModuleState(module: HabitatModule): string {
   return getRuntimeStatus(module) ?? "unknown";
+}
+
+export function getDeclaredModuleState(module: HabitatModule): string {
+  return getRuntimeStatus(module) ?? "unknown";
+}
+
+export function getEffectiveModuleState(module: HabitatModule): string {
+  if (module.constructionJob) {
+    return "constructing";
+  }
+
+  return getCurrentModuleState(module);
 }
 
 export function getCurrentPowerDrawKw(module: HabitatModule): number {
@@ -64,7 +77,8 @@ function formatDecimal(value: number) {
 function getModulePowerStatuses(modules: HabitatModule[]): ModulePowerStatus[] {
   return modules.map((module) => ({
     moduleName: module.displayName,
-    state: getCurrentModuleState(module),
+    declaredState: getDeclaredModuleState(module),
+    effectiveState: getEffectiveModuleState(module),
     powerDrawKw: getCurrentPowerDrawKw(module),
   }));
 }
@@ -81,7 +95,8 @@ export function formatModulePowerStatusTable(modules: HabitatModule[]): string {
   const rows = getModulePowerStatuses(modules);
   const header = {
     moduleName: "Module",
-    state: "State",
+    declaredState: "Declared",
+    effectiveState: "Effective",
     powerDrawKw: "Power Draw (kW)",
   };
 
@@ -89,18 +104,25 @@ export function formatModulePowerStatusTable(modules: HabitatModule[]): string {
     header.moduleName.length,
     ...rows.map((row) => row.moduleName.length),
   );
-  const stateWidth = Math.max(header.state.length, ...rows.map((row) => row.state.length));
+  const declaredWidth = Math.max(
+    header.declaredState.length,
+    ...rows.map((row) => row.declaredState.length),
+  );
+  const effectiveWidth = Math.max(
+    header.effectiveState.length,
+    ...rows.map((row) => row.effectiveState.length),
+  );
   const drawWidth = Math.max(
     header.powerDrawKw.length,
     ...rows.map((row) => formatDecimal(row.powerDrawKw).length),
   );
 
   const lines = [
-    `${header.moduleName.padEnd(moduleWidth)}  ${header.state.padEnd(stateWidth)}  ${header.powerDrawKw.padStart(drawWidth)}`,
-    `${"-".repeat(moduleWidth)}  ${"-".repeat(stateWidth)}  ${"-".repeat(drawWidth)}`,
+    `${header.moduleName.padEnd(moduleWidth)}  ${header.declaredState.padEnd(declaredWidth)}  ${header.effectiveState.padEnd(effectiveWidth)}  ${header.powerDrawKw.padStart(drawWidth)}`,
+    `${"-".repeat(moduleWidth)}  ${"-".repeat(declaredWidth)}  ${"-".repeat(effectiveWidth)}  ${"-".repeat(drawWidth)}`,
     ...rows.map(
       (row) =>
-        `${row.moduleName.padEnd(moduleWidth)}  ${row.state.padEnd(stateWidth)}  ${formatDecimal(row.powerDrawKw).padStart(drawWidth)}`,
+        `${row.moduleName.padEnd(moduleWidth)}  ${row.declaredState.padEnd(declaredWidth)}  ${row.effectiveState.padEnd(effectiveWidth)}  ${formatDecimal(row.powerDrawKw).padStart(drawWidth)}`,
     ),
     "",
     `Total power draw: ${formatDecimal(getTotalCurrentPowerDrawKw(modules))} kW`,
@@ -144,6 +166,12 @@ export function runPowerTicks(
   );
 
   if (batteryEnergyBeforeKwh < energyConsumedKwh) {
+    if (batteryEnergyBeforeKwh === 0 && energyConsumedKwh > 0) {
+      throw new Error(
+        "No usable battery energy is available. Add or activate a battery before ticking.",
+      );
+    }
+
     throw new Error(
       `Insufficient battery energy. Required ${energyConsumedKwh} kWh but only ${batteryEnergyBeforeKwh} kWh is available.`,
     );
