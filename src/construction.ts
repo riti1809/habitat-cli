@@ -389,7 +389,7 @@ export async function startConstruction(
     throw new Error("No local registration found. Run habitat register first.");
   }
 
-  const blueprint = await getBlueprint(blueprintId, registration.baseUrl);
+  const blueprint = await getBlueprint(blueprintId);
   const requiredResources = getRequiredResources(blueprint);
   const outputModuleType = getOutputModuleType(blueprint);
   const buildTicks = getBuildTicks(blueprint);

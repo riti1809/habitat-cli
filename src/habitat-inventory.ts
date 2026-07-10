@@ -45,6 +45,10 @@ function formatInventoryRows(inventory: HabitatInventory) {
 
 export function formatInventoryTable(modules: HabitatModule[]) {
   const { inventory } = readSupplyCacheInventory(modules);
+  return formatInventoryTableFromInventory(inventory);
+}
+
+export function formatInventoryTableFromInventory(inventory: HabitatInventory) {
   const rows = formatInventoryRows(inventory);
 
   if (rows.length === 0) {

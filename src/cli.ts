@@ -35,8 +35,7 @@ import {
   startConstruction,
 } from "./construction";
 import {
-  addSupplyCacheInventory,
-  formatInventoryTable,
+  formatInventoryTableFromInventory,
 } from "./habitat-inventory";
 import {
   getBlueprint,
@@ -46,6 +45,16 @@ import {
 } from "./kepler-blueprints";
 import { listResources, type ResourceSummary } from "./kepler-resources";
 import { getSolarIrradiance } from "./kepler-solar";
+import { requestJson, type JsonRequestOptions } from "./api-client";
+import {
+  createModule as createLocalModule,
+  deleteModule as deleteLocalModule,
+  getInventory as getLocalInventory,
+  getModule as getLocalModule,
+  listModules as listLocalModules,
+  setInventory as setLocalInventory,
+  updateModule as updateLocalModule,
+} from "./local-api";
 
 type RegisterOptions = {
   name: string;
@@ -83,13 +92,6 @@ type TickOptions = {
 type InventoryAddOptions = {
   resourceType: string;
   quantity: string;
-};
-
-type KeplerErrorResponse = {
-  error?: {
-    code?: string;
-    message?: string;
-  };
 };
 
 type HabitatRegistrationResponse = {
@@ -243,36 +245,16 @@ function formatPowerDrawKw(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(3);
 }
 
-async function parseErrorMessage(response: Response) {
-  const fallback = `${response.status} ${response.statusText}`.trim();
-
-  try {
-    const parsed = (await response.json()) as KeplerErrorResponse;
-    return parsed.error?.message ?? parsed.error?.code ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-async function keplerRequest(
+async function keplerRequest<TResponse>(
   path: string,
-  init: RequestInit = {},
+  init: Omit<JsonRequestOptions, "baseUrl" | "apiToken"> = {},
   baseUrl = getBaseUrl(),
 ) {
-  const response = await fetch(`${baseUrl.replace(/\/+$/, "")}${path}`, {
+  return requestJson<TResponse>(path, {
     ...init,
-    headers: {
-      Authorization: `Bearer ${requireToken()}`,
-      Accept: "application/json",
-      ...init.headers,
-    },
+    baseUrl,
+    apiToken: requireToken(),
   });
-
-  if (!response.ok) {
-    throw new Error(await parseErrorMessage(response));
-  }
-
-  return response;
 }
 
 async function registerHabitat(name: string) {
@@ -285,18 +267,13 @@ async function registerHabitat(name: string) {
   }
 
   const habitatUuid = randomUUID();
-  const response = await keplerRequest("/habitats/register", {
+  const parsed = await keplerRequest<HabitatRegistrationResponse>("/habitats/register", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+    body: {
       displayName: name,
       habitatUuid,
-    }),
+    },
   });
-
-  const parsed = (await response.json()) as unknown;
 
   if (!isHabitatRegistrationResponse(parsed)) {
     throw new Error("Kepler returned an unexpected registration response.");
@@ -318,12 +295,11 @@ async function registerHabitat(name: string) {
 }
 
 async function fetchRegistrationStatus(registration: StoredRegistration) {
-  const response = await keplerRequest(
+  const parsed = await keplerRequest<HabitatResponse>(
     `/habitats/${encodeURIComponent(registration.habitatId)}/registration`,
     {},
     registration.baseUrl,
   );
-  const parsed = (await response.json()) as unknown;
 
   if (!isHabitatResponse(parsed)) {
     throw new Error("Kepler returned an unexpected status response.");
@@ -363,8 +339,8 @@ async function unregisterHabitat(registration: StoredRegistration) {
   deleteModules();
 }
 
-function createModule(options: ModuleCreateOptions) {
-  const modules = readHydratedModules();
+async function createModule(options: ModuleCreateOptions) {
+  const modules = await listLocalModules();
 
   if (modules.some((module) => module.id === options.id)) {
     throw new Error(`Module "${options.id}" already exists.`);
@@ -402,31 +378,27 @@ function createModule(options: ModuleCreateOptions) {
     updatedAt: now,
   };
 
-  writeModules([...modules, module]);
-  return module;
+  return createLocalModule(module);
 }
 
-function findModule(moduleId: string) {
-  return readHydratedModules().find(
-    (module) => module.id === moduleId || module.alias === moduleId,
-  );
-}
+async function findModule(moduleId: string) {
+  try {
+    return await getLocalModule(moduleId);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("was not found")) {
+      return undefined;
+    }
 
-function updateModule(moduleId: string, options: ModuleUpdateOptions) {
-  const modules = readHydratedModules();
-  const moduleIndex = modules.findIndex(
-    (module) => module.id === moduleId || module.alias === moduleId,
-  );
-
-  if (moduleIndex === -1) {
-    throw new Error(`Module "${moduleId}" was not found.`);
+    throw error;
   }
+}
+
+async function updateModule(moduleId: string, options: ModuleUpdateOptions) {
+  const currentModule = await getLocalModule(moduleId);
 
   if (!options.name && !options.status && options.health === undefined) {
     throw new Error("Provide at least one field to update.");
   }
-
-  const currentModule = modules[moduleIndex];
   const runtimeAttributes = { ...currentModule.runtimeAttributes };
 
   if (options.status) {
@@ -444,22 +416,11 @@ function updateModule(moduleId: string, options: ModuleUpdateOptions) {
     updatedAt: new Date().toISOString(),
   };
 
-  modules[moduleIndex] = updatedModule;
-  writeModules(modules);
-  return updatedModule;
+  return updateLocalModule(moduleId, updatedModule);
 }
 
-function deleteModule(moduleId: string) {
-  const modules = readHydratedModules();
-  const remainingModules = modules.filter(
-    (module) => module.id !== moduleId && module.alias !== moduleId,
-  );
-
-  if (remainingModules.length === modules.length) {
-    throw new Error(`Module "${moduleId}" was not found.`);
-  }
-
-  writeModules(remainingModules);
+async function deleteModule(moduleId: string) {
+  await deleteLocalModule(moduleId);
 }
 
 function parseModuleStatus(value: string): AllowedModuleStatus {
@@ -472,17 +433,8 @@ function parseModuleStatus(value: string): AllowedModuleStatus {
   );
 }
 
-function setModuleStatus(moduleId: string, status: AllowedModuleStatus) {
-  const modules = readHydratedModules();
-  const moduleIndex = modules.findIndex(
-    (module) => module.id === moduleId || module.alias === moduleId,
-  );
-
-  if (moduleIndex === -1) {
-    throw new Error(`Module "${moduleId}" was not found.`);
-  }
-
-  const currentModule = modules[moduleIndex];
+async function setModuleStatus(moduleId: string, status: AllowedModuleStatus) {
+  const currentModule = await getLocalModule(moduleId);
   const updatedModule: HabitatModule = {
     ...currentModule,
     runtimeAttributes: {
@@ -492,9 +444,11 @@ function setModuleStatus(moduleId: string, status: AllowedModuleStatus) {
     updatedAt: new Date().toISOString(),
   };
 
-  modules[moduleIndex] = updatedModule;
-  writeModules(modules);
-  return updatedModule;
+  return updateLocalModule(moduleId, updatedModule);
+}
+
+async function getCurrentInventory() {
+  return getLocalInventory();
 }
 
 function printRegistration(registration: StoredRegistration) {
@@ -1059,17 +1013,47 @@ inventoryCommand
   .description("Add resources to the supply cache inventory.")
   .argument("<resource-type>", "Resource type")
   .argument("<quantity>", "Quantity to add")
-  .action((resourceType: string, quantity: string) => {
+  .action(async (resourceType: string, quantity: string) => {
     try {
-      const result = addSupplyCacheInventory(
-        readHydratedModules(),
-        resourceType,
-        parseQuantity(quantity),
-      );
-
-      writeModules(result.modules);
+      const inventory = await getCurrentInventory();
+      const updatedInventory = {
+        ...inventory,
+        [resourceType]: (inventory[resourceType] ?? 0) + parseQuantity(quantity),
+      };
+      const result = await setLocalInventory(updatedInventory);
       console.log(
-        `Supply cache inventory updated: ${resourceType} = ${result.inventory[resourceType]}`,
+        `Supply cache inventory updated: ${resourceType} = ${result[resourceType]}`,
+      );
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+inventoryCommand
+  .command("remove")
+  .description("Remove resources from the supply cache inventory.")
+  .argument("<resource-type>", "Resource type")
+  .argument("<quantity>", "Quantity to remove")
+  .action(async (resourceType: string, quantity: string) => {
+    try {
+      const inventory = await getCurrentInventory();
+      const removalQuantity = parseQuantity(quantity);
+      const availableQuantity = inventory[resourceType] ?? 0;
+
+      if (availableQuantity < removalQuantity) {
+        throw new Error(
+          `Insufficient local inventory for required resource "${resourceType}".`,
+        );
+      }
+
+      const updatedInventory = {
+        ...inventory,
+        [resourceType]: availableQuantity - removalQuantity,
+      };
+      const result = await setLocalInventory(updatedInventory);
+      console.log(
+        `Supply cache inventory updated: ${resourceType} = ${result[resourceType]}`,
       );
     } catch (error) {
       printError(error);
@@ -1085,6 +1069,7 @@ Inventory is stored on the supply-cache module in .habitat/state.sqlite.
 Examples:
   habitat inventory list
   habitat inventory add ferrite 90
+  habitat inventory remove ferrite 25
 `,
 );
 
@@ -1152,9 +1137,9 @@ constructionCommand
 inventoryCommand
   .command("list")
   .description("Show the supply cache inventory.")
-  .action(() => {
+  .action(async () => {
     try {
-      console.log(formatInventoryTable(readHydratedModules()));
+      console.log(formatInventoryTableFromInventory(await getCurrentInventory()));
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1297,9 +1282,9 @@ moduleCommand
   .requiredOption("--name <name>", "Module display name")
   .option("--status <status>", "Initial runtime status")
   .option("--health <health>", "Initial health from 0 to 100")
-  .action((options: ModuleCreateOptions) => {
+  .action(async (options: ModuleCreateOptions) => {
     try {
-      const module = createModule(options);
+      const module = await createModule(options);
       console.log(`Created module "${module.id}".`);
       printModule(module);
     } catch (error) {
@@ -1311,9 +1296,9 @@ moduleCommand
 moduleCommand
   .command("list")
   .description("List local modules.")
-  .action(() => {
+  .action(async () => {
     try {
-      printModuleList(readHydratedModules());
+      printModuleList(await listLocalModules());
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1323,9 +1308,9 @@ moduleCommand
 moduleCommand
   .command("status")
   .description("Show module states with current power draw.")
-  .action(() => {
+  .action(async () => {
     try {
-      console.log(formatModulePowerStatusTable(readHydratedModules()));
+      console.log(formatModulePowerStatusTable(await listLocalModules()));
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1337,9 +1322,9 @@ moduleCommand
   .description("Set one local module runtime status.")
   .argument("<id>", "Module ID or alias")
   .argument("<status>", "New module status")
-  .action((moduleId: string, status: string) => {
+  .action(async (moduleId: string, status: string) => {
     try {
-      const updatedModule = setModuleStatus(moduleId, parseModuleStatus(status));
+      const updatedModule = await setModuleStatus(moduleId, parseModuleStatus(status));
       console.log(
         `Updated module "${updatedModule.id}" to status "${String(updatedModule.runtimeAttributes.status)}" (power draw: ${formatPowerDrawKw(getCurrentPowerDrawKw(updatedModule))} kW).`,
       );
@@ -1353,9 +1338,9 @@ moduleCommand
   .command("show")
   .description("Show one local module.")
   .argument("<id>", "Module ID")
-  .action((moduleId: string) => {
+  .action(async (moduleId: string) => {
     try {
-      const module = findModule(moduleId);
+      const module = await findModule(moduleId);
 
       if (!module) {
         throw new Error(`Module "${moduleId}" was not found.`);
@@ -1375,9 +1360,9 @@ moduleCommand
   .option("--name <name>", "New module display name")
   .option("--status <status>", "New runtime status")
   .option("--health <health>", "New health from 0 to 100")
-  .action((moduleId: string, options: ModuleUpdateOptions) => {
+  .action(async (moduleId: string, options: ModuleUpdateOptions) => {
     try {
-      const module = updateModule(moduleId, options);
+      const module = await updateModule(moduleId, options);
       console.log(`Updated module "${module.id}".`);
       printModule(module);
     } catch (error) {
@@ -1390,9 +1375,9 @@ moduleCommand
   .command("delete")
   .description("Delete one local module.")
   .argument("<id>", "Module ID")
-  .action((moduleId: string) => {
+  .action(async (moduleId: string) => {
     try {
-      deleteModule(moduleId);
+      await deleteModule(moduleId);
       console.log(`Deleted module "${moduleId}".`);
     } catch (error) {
       printError(error);

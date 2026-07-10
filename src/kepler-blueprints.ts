@@ -1,3 +1,5 @@
+import { ApiClientError, requestJson } from "./api-client";
+
 export type BlueprintSummary = {
   id: string;
   blueprintId: string;
@@ -24,44 +26,6 @@ type BlueprintCatalogResponse = {
 type BlueprintResponse = {
   blueprint: BlueprintDetail;
 };
-
-type KeplerErrorResponse = {
-  error?: {
-    code?: string;
-    message?: string;
-  };
-};
-
-const defaultBaseUrl = "https://planet.turingguild.com";
-
-function getBaseUrl() {
-  return (
-    process.env.KEPLER_BASE_URL ??
-    process.env.KEPLER_WORLD_BASE_URL ??
-    process.env.PLANET_SERVER_PUBLIC_BASE_URL ??
-    defaultBaseUrl
-  ).replace(/\/+$/, "");
-}
-
-function getToken() {
-  return (
-    process.env.KEPLER_PLANET_TOKEN ??
-    process.env.KEPLER_WORLD_TOKEN ??
-    process.env.PLANET_TOKEN
-  );
-}
-
-function requireToken() {
-  const token = getToken();
-
-  if (!token) {
-    throw new Error(
-      "Missing Kepler token. Set KEPLER_PLANET_TOKEN in your environment or .env file.",
-    );
-  }
-
-  return token;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -104,42 +68,8 @@ function isBlueprintResponse(value: unknown): value is BlueprintResponse {
   return isRecord(value) && isBlueprintDetail(value.blueprint);
 }
 
-async function parseErrorMessage(response: Response) {
-  const fallback = `${response.status} ${response.statusText}`.trim();
-
-  try {
-    const parsed = (await response.json()) as KeplerErrorResponse;
-    return parsed.error?.message ?? parsed.error?.code ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-async function keplerRequest(
-  path: string,
-  init: RequestInit = {},
-  baseUrl = getBaseUrl(),
-) {
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${requireToken()}`,
-      Accept: "application/json",
-      ...init.headers,
-    },
-  });
-
-  return response;
-}
-
-export async function listBlueprints(baseUrl = getBaseUrl()) {
-  const response = await keplerRequest("/catalog/blueprints", {}, baseUrl);
-
-  if (!response.ok) {
-    throw new Error(await parseErrorMessage(response));
-  }
-
-  const parsed = (await response.json()) as unknown;
+export async function listBlueprints() {
+  const parsed = (await requestJson<unknown>("/catalog/blueprints")) as unknown;
 
   if (!isBlueprintCatalogResponse(parsed)) {
     throw new Error("Kepler returned an unexpected blueprint catalog response.");
@@ -150,23 +80,20 @@ export async function listBlueprints(baseUrl = getBaseUrl()) {
 
 export async function getBlueprint(
   blueprintId: string,
-  baseUrl = getBaseUrl(),
 ) {
-  const response = await keplerRequest(
-    `/catalog/blueprints/${encodeURIComponent(blueprintId)}`,
-    {},
-    baseUrl,
-  );
+  let parsed: unknown;
 
-  if (response.status === 404) {
-    throw new Error(`Blueprint "${blueprintId}" was not found.`);
+  try {
+    parsed = await requestJson<unknown>(
+      `/catalog/blueprints/${encodeURIComponent(blueprintId)}`,
+    );
+  } catch (error) {
+    if (error instanceof ApiClientError && error.status === 404) {
+      throw new Error(`Blueprint "${blueprintId}" was not found.`);
+    }
+
+    throw error;
   }
-
-  if (!response.ok) {
-    throw new Error(await parseErrorMessage(response));
-  }
-
-  const parsed = (await response.json()) as unknown;
 
   if (!isBlueprintResponse(parsed)) {
     throw new Error("Kepler returned an unexpected blueprint response.");
