@@ -69,10 +69,6 @@ function toRegistrationView(
   };
 }
 
-function getListenHost() {
-  return process.env.HABITAT_API_HOST ?? "127.0.0.1";
-}
-
 function getListenPort() {
   const rawPort = process.env.HABITAT_API_PORT ?? "8787";
   const port = Number(rawPort);
@@ -456,14 +452,13 @@ export function createBackendApp(options: BackendAppOptions = {}) {
 export const app = createBackendApp();
 
 if (import.meta.main) {
-  const host = getListenHost();
   const port = getListenPort();
 
   Bun.serve({
     fetch: app.fetch,
-    hostname: host,
+    hostname: "0.0.0.0",
     port,
   });
 
-  console.log(`Hono backend listening on http://${host}:${port}`);
+  console.log(`Hono backend listening on http://0.0.0.0:${port}`);
 }
