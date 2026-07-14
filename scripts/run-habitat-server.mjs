@@ -64,6 +64,10 @@ function findListenerPid(port) {
   return match ? Number(match[1]) : undefined;
 }
 
+function hasListener(port) {
+  return findListenerPid(port) !== undefined;
+}
+
 function killPid(pid) {
   function isAlive(targetPid) {
     try {
@@ -101,11 +105,29 @@ function killPid(pid) {
   }
 }
 
+function waitForPortToClear(port, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+
+  while (Date.now() < deadline) {
+    if (!hasListener(port)) {
+      return;
+    }
+
+    Atomics.wait(pause, 0, 0, 50);
+  }
+
+  if (hasListener(port)) {
+    console.warn(`Port ${port} was still busy after cleanup. Starting anyway.`);
+  }
+}
+
 const port = getListenPort();
 const listenerPid = findListenerPid(port);
 
 if (listenerPid) {
   killPid(listenerPid);
+  waitForPortToClear(port);
 }
 
 const bunExecutable = findBunExecutable();
