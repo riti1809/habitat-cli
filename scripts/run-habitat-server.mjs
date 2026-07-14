@@ -1,6 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
+import {
+  restartManagedService,
+  userServiceIsLoaded,
+} from "./habitat-server-launcher.mjs";
+
 const candidates = [
   process.env.BUN_BIN,
   "bun",
@@ -31,103 +36,14 @@ function findBunExecutable() {
   return bunExecutable;
 }
 
-function getListenPort() {
-  const rawPort = process.env.HABITAT_API_PORT ?? "8787";
-  const port = Number(rawPort);
+if (userServiceIsLoaded(spawnSync)) {
+  const status = restartManagedService(spawnSync);
 
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    console.error("HABITAT_API_PORT must be a valid TCP port number.");
-    process.exit(1);
+  if (status === 0) {
+    console.log("Habitat API restarted through systemd.");
   }
 
-  return port;
-}
-
-function findListenerPid(port) {
-  const result = spawnSync("ss", ["-ltnp"], {
-    encoding: "utf8",
-  });
-
-  if (result.status !== 0 || !result.stdout) {
-    return undefined;
-  }
-
-  const line = result.stdout
-    .split("\n")
-    .find((entry) => entry.includes(`:${port} `));
-
-  if (!line) {
-    return undefined;
-  }
-
-  const match = line.match(/pid=(\d+)/);
-  return match ? Number(match[1]) : undefined;
-}
-
-function hasListener(port) {
-  return findListenerPid(port) !== undefined;
-}
-
-function killPid(pid) {
-  function isAlive(targetPid) {
-    try {
-      process.kill(targetPid, 0);
-      return true;
-    } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") {
-        return false;
-      }
-
-      throw error;
-    }
-  }
-
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") {
-      return;
-    }
-
-    throw error;
-  }
-
-  if (isAlive(pid)) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") {
-        return;
-      }
-
-      throw error;
-    }
-  }
-}
-
-function waitForPortToClear(port, timeoutMs = 3000) {
-  const deadline = Date.now() + timeoutMs;
-  const pause = new Int32Array(new SharedArrayBuffer(4));
-
-  while (Date.now() < deadline) {
-    if (!hasListener(port)) {
-      return;
-    }
-
-    Atomics.wait(pause, 0, 0, 50);
-  }
-
-  if (hasListener(port)) {
-    console.warn(`Port ${port} was still busy after cleanup. Starting anyway.`);
-  }
-}
-
-const port = getListenPort();
-const listenerPid = findListenerPid(port);
-
-if (listenerPid) {
-  killPid(listenerPid);
-  waitForPortToClear(port);
+  process.exit(status);
 }
 
 const bunExecutable = findBunExecutable();
