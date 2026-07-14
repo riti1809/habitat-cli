@@ -128,6 +128,28 @@ test("backend reads and writes module and inventory state", async () => {
     assert.equal(updateResponse.status, 200);
     assert.equal((await updateResponse.json()).module.displayName, "Command Updated");
 
+    const replaceResponse = await app.request("http://localhost/modules", {
+      method: "PUT",
+      body: JSON.stringify({
+        modules: [
+          modules[0],
+          createModule({
+            id: "life-support-1",
+            alias: "life-support-1",
+            moduleType: "life-support",
+            blueprintId: "life-support",
+            displayName: "Life Support",
+          }),
+        ],
+      }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    assert.equal(replaceResponse.status, 200);
+    assert.equal((await replaceResponse.json()).modules.length, 2);
+
     const inventoryResponse = await app.request("http://localhost/inventory");
     assert.deepEqual(await inventoryResponse.json(), { inventory: { ferrite: 10 } });
 
@@ -157,7 +179,7 @@ test("backend reads and writes module and inventory state", async () => {
       },
     });
 
-    const deleteResponse = await app.request("http://localhost/modules/command-1", {
+    const deleteResponse = await app.request("http://localhost/modules/life-support-1", {
       method: "DELETE",
     });
 
@@ -166,13 +188,14 @@ test("backend reads and writes module and inventory state", async () => {
     console.log = originalLog;
   }
 
-  assert.deepEqual(messages, [
-    '[habitat-api] GET /modules -> 2 modules',
-    '[habitat-api] GET /modules/command-1 -> found module "command-1"',
-    '[habitat-api] PUT /modules/command-1 -> updated module "Command Updated"',
-    '[habitat-api] GET /inventory -> 1 resource types',
-    '[habitat-api] PUT /inventory -> 1 resource types',
-    '[habitat-api] GET /inventory -> 1 resource types',
-    '[habitat-api] DELETE /modules/command-1 -> deleted module "command-1"',
-  ]);
+    assert.deepEqual(messages, [
+      '[habitat-api] GET /modules -> 2 modules',
+      '[habitat-api] GET /modules/command-1 -> found module "command-1"',
+      '[habitat-api] PUT /modules/command-1 -> updated module "command-1"',
+      '[habitat-api] PUT /modules -> replaced 2 modules',
+      '[habitat-api] GET /inventory -> 1 resource types',
+      '[habitat-api] PUT /inventory -> 1 resource types',
+      '[habitat-api] GET /inventory -> 1 resource types',
+      '[habitat-api] DELETE /modules/life-support-1 -> deleted module "life-support-1"',
+    ]);
 });

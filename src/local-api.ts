@@ -1,6 +1,8 @@
 import { requestJson } from "./api-client";
 import type { HabitatInventory } from "./habitat-inventory";
 import type { HabitatModule } from "./habitat-store";
+import type { StoredRegistration } from "./habitat-store";
+import type { WorldScanResponse } from "./world-scan";
 
 type ModulesResponse = {
   modules: HabitatModule[];
@@ -14,9 +16,39 @@ type InventoryResponse = {
   inventory: HabitatInventory;
 };
 
+type RegistrationResponse = {
+  registration: (StoredRegistration & { apiToken: string }) | null;
+};
+
+type ModulesReplaceResponse = {
+  modules: HabitatModule[];
+};
+
 export async function listModules() {
   const response = await requestJson<ModulesResponse>("/modules");
   return response.modules;
+}
+
+export async function getRegistration() {
+  const response = await requestJson<RegistrationResponse>("/registration");
+  return response.registration;
+}
+
+export async function registerHabitat(displayName: string) {
+  const response = await requestJson<RegistrationResponse>("/registration", {
+    method: "POST",
+    body: {
+      displayName,
+    },
+  });
+
+  return response.registration;
+}
+
+export async function unregisterHabitat() {
+  await requestJson<void>("/registration", {
+    method: "DELETE",
+  });
 }
 
 export async function getModule(moduleId: string) {
@@ -58,6 +90,17 @@ export async function deleteModule(moduleId: string) {
   });
 }
 
+export async function replaceModules(modules: HabitatModule[]) {
+  const response = await requestJson<ModulesReplaceResponse>("/modules", {
+    method: "PUT",
+    body: {
+      modules,
+    },
+  });
+
+  return response.modules;
+}
+
 export async function getInventory() {
   const response = await requestJson<InventoryResponse>("/inventory");
   return response.inventory;
@@ -72,4 +115,19 @@ export async function setInventory(inventory: HabitatInventory) {
   });
 
   return response.inventory;
+}
+
+export async function scanWorld(
+  x: number,
+  y: number,
+  sensorStrength: number,
+  radiusTiles = 0,
+) {
+  const query = new URLSearchParams({
+    x: String(x),
+    y: String(y),
+    sensorStrength: String(sensorStrength),
+    radiusTiles: String(radiusTiles),
+  });
+  return requestJson<WorldScanResponse>(`/world/scan?${query.toString()}`);
 }

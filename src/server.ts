@@ -1,12 +1,18 @@
+import { randomUUID } from "node:crypto";
+
 import { Hono } from "hono";
 
-import { ApiClientError, requestJsonWithStatus } from "./api-client";
+import { ApiClientError, requestJson, requestJsonWithStatus } from "./api-client";
 import {
+  deleteModules,
+  deleteRegistration,
+  hydrateModulesFromStarterModules,
   readModules,
   readRegistration,
   type HabitatModule,
   type StoredRegistration,
   writeModules,
+  writeRegistration,
 } from "./habitat-store";
 import type { BlueprintDetail } from "./kepler-blueprints";
 import type { ResourceSummary } from "./kepler-resources";
@@ -21,6 +27,11 @@ export type BackendRegistrationView = {
   habitatUuid: string;
   habitatId: string;
   displayName: string;
+  baseUrl: string;
+  registeredAt: string;
+  starterModules: StoredRegistration["starterModules"];
+  blueprints: StoredRegistration["blueprints"];
+  lastStatus?: StoredRegistration["lastStatus"];
   apiToken: string;
 };
 
@@ -55,18 +66,6 @@ function getApiToken(options: BackendAppOptions) {
     process.env.KEPLER_WORLD_TOKEN ??
     process.env.PLANET_TOKEN
   );
-}
-
-function toRegistrationView(
-  registration: StoredRegistration,
-  apiToken: string,
-): BackendRegistrationView {
-  return {
-    habitatUuid: registration.habitatUuid,
-    habitatId: registration.habitatId,
-    displayName: registration.displayName,
-    apiToken,
-  };
 }
 
 function getListenPort() {
@@ -148,6 +147,34 @@ function summarizeInventory(inventory: HabitatInventory) {
   return `${resourceTypes} resource types`;
 }
 
+function summarizeModulesReplaced(modules: HabitatModule[]) {
+  return `replaced ${modules.length} modules`;
+}
+
+function parseScanInteger(
+  value: string | undefined,
+  name: string,
+  minimum?: number,
+  maximum?: number,
+) {
+  if (value === undefined || !/^-?\d+$/.test(value)) {
+    throw new Error(`${name} must be an integer.`);
+  }
+
+  const parsed = Number(value);
+
+  if (
+    (minimum !== undefined && parsed < minimum) ||
+    (maximum !== undefined && parsed > maximum)
+  ) {
+    throw new Error(
+      `${name} must be an integer from ${minimum} to ${maximum}.`,
+    );
+  }
+
+  return parsed;
+}
+
 async function proxyKeplerJson<TResponse>(
   method: string,
   path: string,
@@ -181,6 +208,118 @@ function findModuleIndex(modules: HabitatModule[], moduleId: string) {
 export function createBackendApp(options: BackendAppOptions = {}) {
   const app = new Hono();
 
+  app.post("/registration", async (c) => {
+    const parsed = (await c.req.json()) as { displayName?: string } | null;
+    const displayName = parsed?.displayName;
+
+    if (!displayName) {
+      logHabitatApi(c.req.method, "/registration", "missing registration payload");
+      return jsonError("Provide a habitat display name.");
+    }
+
+    const cwd = options.cwd ?? process.cwd();
+    const existingRegistration = readRegistration(cwd);
+
+    if (existingRegistration) {
+      logHabitatApi(
+        c.req.method,
+        "/registration",
+        `habitat "${existingRegistration.displayName}" already registered`,
+      );
+      return jsonError(
+        `Habitat is already registered as "${existingRegistration.displayName}" (${existingRegistration.habitatId}).`,
+        409,
+      );
+    }
+
+    const apiToken = getApiToken(options);
+
+    if (!apiToken) {
+      logHabitatApi(c.req.method, "/registration", "missing API token for registration");
+      throw new Error(
+        "Missing API token. Set HABITAT_API_TOKEN or a Kepler token before registering.",
+      );
+    }
+
+    const habitatUuid = randomUUID();
+    const registrationResponse = await requestJsonWithStatus<{
+      habitatId: string;
+      starterModules: StoredRegistration["starterModules"];
+      blueprints: StoredRegistration["blueprints"];
+    }>("/habitats/register", {
+      baseUrl: getKeplerBaseUrl(options),
+      apiToken: getKeplerToken(options),
+      method: "POST",
+      body: {
+        displayName,
+        habitatUuid,
+      },
+    });
+
+    const registration: StoredRegistration = {
+      habitatUuid,
+      habitatId: registrationResponse.data.habitatId,
+      displayName,
+      baseUrl: getKeplerBaseUrl(options),
+      registeredAt: new Date().toISOString(),
+      starterModules: registrationResponse.data.starterModules,
+      blueprints: registrationResponse.data.blueprints,
+    };
+
+    writeRegistration(registration, cwd);
+    writeModules(
+      hydrateModulesFromStarterModules(registration.starterModules, registration.registeredAt),
+      cwd,
+    );
+
+    logHabitatApi(c.req.method, "/registration", `registered habitat "${displayName}"`);
+    return c.json<BackendRegistrationResponse>(
+      {
+        registration: {
+          ...registration,
+          apiToken,
+        },
+      },
+      201,
+    );
+  });
+
+  app.delete("/registration", async (c) => {
+    const cwd = options.cwd ?? process.cwd();
+    const registration = readRegistration(cwd);
+
+    if (!registration) {
+      logHabitatApi(c.req.method, "/registration", "not registered");
+      return jsonError("No local registration found.", 404);
+    }
+
+    try {
+      await requestJson(
+        `/habitats/${encodeURIComponent(registration.habitatId)}`,
+        {
+          method: "DELETE",
+          baseUrl: registration.baseUrl,
+          apiToken: getKeplerToken(options),
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (!message.toLowerCase().includes("not registered")) {
+        throw error;
+      }
+
+      console.warn(
+        `Kepler no longer has habitat "${registration.habitatId}". Removing stale local registration.`,
+      );
+    }
+
+    deleteRegistration(cwd);
+    deleteModules(cwd);
+    logHabitatApi(c.req.method, "/registration", `deleted habitat "${registration.habitatId}"`);
+    return c.body(null, 204);
+  });
+
   app.get("/registration", (c) => {
     const registration = readRegistration(options.cwd ?? process.cwd());
 
@@ -203,7 +342,10 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     }
 
     const response = c.json<BackendRegistrationResponse>({
-      registration: toRegistrationView(registration, apiToken),
+      registration: {
+        ...registration,
+        apiToken,
+      },
     });
     logHabitatApi(
       c.req.method,
@@ -265,6 +407,20 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     writeModules([...modules, module], options.cwd ?? process.cwd());
     logHabitatApi(c.req.method, "/modules", `created module "${module.id}"`);
     return c.json<BackendModuleResponse>({ module }, 201);
+  });
+
+  app.put("/modules", async (c) => {
+    const parsed = (await c.req.json()) as { modules?: HabitatModule[] } | null;
+    const modules = parsed?.modules;
+
+    if (!modules) {
+      logHabitatApi(c.req.method, "/modules", "missing modules payload");
+      return jsonError("Provide a modules payload.");
+    }
+
+    writeModules(modules, options.cwd ?? process.cwd());
+    logHabitatApi(c.req.method, "/modules", summarizeModulesReplaced(modules));
+    return c.json<BackendModulesResponse>({ modules });
   });
 
   app.put("/modules/:moduleId", async (c) => {
@@ -407,6 +563,66 @@ export function createBackendApp(options: BackendAppOptions = {}) {
         "GET",
         "/catalog/resources",
         "/catalog/resources",
+        options,
+      );
+      return c.json(response);
+    } catch (error) {
+      if (error instanceof Response) {
+        return new Response(await error.text(), {
+          status: error.status,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get("/world/scan", async (c) => {
+    const query = c.req.query();
+    const registration = readRegistration(options.cwd ?? process.cwd());
+
+    if (!registration) {
+      logHabitatApi(c.req.method, "/world/scan", "not registered");
+      return jsonError("No local registration found.", 404);
+    }
+
+    let x: number;
+    let y: number;
+    let sensorStrength: number;
+    let radiusTiles: number;
+
+    try {
+      x = parseScanInteger(query.x, "x");
+      y = parseScanInteger(query.y, "y");
+      sensorStrength = parseScanInteger(
+        query.sensorStrength,
+        "sensorStrength",
+        0,
+        100,
+      );
+      radiusTiles = parseScanInteger(query.radiusTiles, "radiusTiles", 0, 5);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logHabitatApi(c.req.method, "/world/scan", `invalid parameters: ${message}`);
+      return jsonError(message);
+    }
+
+    const keplerQuery = new URLSearchParams({
+      habitatId: registration.habitatId,
+      x: String(x),
+      y: String(y),
+      sensorStrength: String(sensorStrength),
+      radiusTiles: String(radiusTiles),
+    });
+
+    logHabitatApi(c.req.method, "/world/scan", "proxied to Kepler");
+
+    try {
+      const response = await proxyKeplerJson<unknown>(
+        "GET",
+        `/world/scan?${keplerQuery.toString()}`,
+        "/world/scan",
         options,
       );
       return c.json(response);

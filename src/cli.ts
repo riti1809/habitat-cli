@@ -1,22 +1,13 @@
 #!/usr/bin/env bun
 
-import { randomUUID } from "node:crypto";
 import { Command, CommanderError } from "commander";
 import packageJson from "../package.json";
 import {
-  deleteRegistration,
-  deleteModules,
-  getDatabaseFilePath,
   hydrateModulesFromStarterModules,
   type HabitatModule,
-  readRegistration,
-  readModules,
   type HabitatStatus,
-  type ProductionBlueprint,
-  type StarterModuleInstance,
   type StoredRegistration,
-  writeModules,
-  writeRegistration,
+  readRegistration,
 } from "./habitat-store";
 import {
   applySolarGeneration,
@@ -46,15 +37,22 @@ import {
 import { listResources, type ResourceSummary } from "./kepler-resources";
 import { getSolarIrradiance } from "./kepler-solar";
 import { requestJson, type JsonRequestOptions } from "./api-client";
+import { resolveRegisteredAt } from "./registration-summary";
 import {
-  createModule as createLocalModule,
-  deleteModule as deleteLocalModule,
-  getInventory as getLocalInventory,
-  getModule as getLocalModule,
-  listModules as listLocalModules,
-  setInventory as setLocalInventory,
-  updateModule as updateLocalModule,
+  createModule as createRemoteModule,
+  deleteModule as deleteRemoteModule,
+  getInventory as getRemoteInventory,
+  getModule as getRemoteModule,
+  getRegistration as getRemoteRegistration,
+  listModules as listRemoteModules,
+  registerHabitat as registerRemoteHabitat,
+  replaceModules as replaceRemoteModules,
+  setInventory as setRemoteInventory,
+  scanWorld,
+  unregisterHabitat as unregisterRemoteHabitat,
+  updateModule as updateRemoteModule,
 } from "./local-api";
+import { formatWorldScan } from "./world-scan";
 
 type RegisterOptions = {
   name: string;
@@ -94,10 +92,12 @@ type InventoryAddOptions = {
   quantity: string;
 };
 
-type HabitatRegistrationResponse = {
-  habitatId: string;
-  starterModules: StarterModuleInstance[];
-  blueprints: ProductionBlueprint[];
+type ScanOptions = {
+  x: string;
+  y: string;
+  strength: string;
+  radius: string;
+  json?: boolean;
 };
 
 type HabitatResponse = {
@@ -139,37 +139,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function isStarterModuleInstance(value: unknown): value is StarterModuleInstance {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value.id === "string" &&
-    typeof value.blueprintId === "string" &&
-    typeof value.displayName === "string" &&
-    isStringArray(value.connectedTo) &&
-    isRecord(value.runtimeAttributes) &&
-    isStringArray(value.capabilities)
-  );
-}
-
-function isProductionBlueprint(value: unknown): value is ProductionBlueprint {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value.id === "string" &&
-    typeof value.blueprintId === "string" &&
-    typeof value.displayName === "string"
-  );
-}
-
 function isHabitatStatus(value: unknown): value is HabitatStatus {
   if (!isRecord(value)) {
     return false;
@@ -184,22 +153,6 @@ function isHabitatStatus(value: unknown): value is HabitatStatus {
     (value.lastSeenAt === undefined ||
       value.lastSeenAt === null ||
       typeof value.lastSeenAt === "string")
-  );
-}
-
-function isHabitatRegistrationResponse(
-  value: unknown,
-): value is HabitatRegistrationResponse {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value.habitatId === "string" &&
-    Array.isArray(value.starterModules) &&
-    value.starterModules.every(isStarterModuleInstance) &&
-    Array.isArray(value.blueprints) &&
-    value.blueprints.every(isProductionBlueprint)
   );
 }
 
@@ -237,6 +190,23 @@ function parseQuantity(value: string) {
   return quantity;
 }
 
+function parseScanInteger(value: string, name: string, minimum?: number, maximum?: number) {
+  if (!/^-?\d+$/.test(value)) {
+    throw new Error(`${name} must be an integer.`);
+  }
+
+  const parsed = Number(value);
+
+  if (
+    (minimum !== undefined && parsed < minimum) ||
+    (maximum !== undefined && parsed > maximum)
+  ) {
+    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}.`);
+  }
+
+  return parsed;
+}
+
 function formatKwh(value: number) {
   return value.toFixed(6);
 }
@@ -258,39 +228,12 @@ async function keplerRequest<TResponse>(
 }
 
 async function registerHabitat(name: string) {
-  const existingRegistration = readRegistration();
+  const registration = await registerRemoteHabitat(name);
 
-  if (existingRegistration) {
-    throw new Error(
-      `Habitat is already registered as "${existingRegistration.displayName}" (${existingRegistration.habitatId}). Run habitat status to inspect it or habitat unregister first.`,
-    );
-  }
-
-  const habitatUuid = randomUUID();
-  const parsed = await keplerRequest<HabitatRegistrationResponse>("/habitats/register", {
-    method: "POST",
-    body: {
-      displayName: name,
-      habitatUuid,
-    },
-  });
-
-  if (!isHabitatRegistrationResponse(parsed)) {
+  if (!registration) {
     throw new Error("Kepler returned an unexpected registration response.");
   }
 
-  const registration: StoredRegistration = {
-    habitatUuid,
-    habitatId: parsed.habitatId,
-    displayName: name,
-    baseUrl: getBaseUrl(),
-    registeredAt: new Date().toISOString(),
-    starterModules: parsed.starterModules,
-    blueprints: parsed.blueprints,
-  };
-
-  writeRegistration(registration);
-  writeModules(hydrateModulesFromStarterModules(parsed.starterModules));
   return registration;
 }
 
@@ -304,43 +247,15 @@ async function fetchRegistrationStatus(registration: StoredRegistration) {
   if (!isHabitatResponse(parsed)) {
     throw new Error("Kepler returned an unexpected status response.");
   }
-
-  const updatedRegistration: StoredRegistration = {
-    ...registration,
-    lastStatus: parsed.habitat,
-  };
-
-  writeRegistration(updatedRegistration);
   return parsed.habitat;
 }
 
-async function unregisterHabitat(registration: StoredRegistration) {
-  try {
-    await keplerRequest(
-      `/habitats/${encodeURIComponent(registration.habitatId)}`,
-      {
-        method: "DELETE",
-      },
-      registration.baseUrl,
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-
-    if (!message.toLowerCase().includes("not registered")) {
-      throw error;
-    }
-
-    console.warn(
-      `Kepler no longer has habitat "${registration.habitatId}". Removing stale local registration.`,
-    );
-  }
-
-  deleteRegistration();
-  deleteModules();
+async function unregisterHabitat() {
+  await unregisterRemoteHabitat();
 }
 
 async function createModule(options: ModuleCreateOptions) {
-  const modules = await listLocalModules();
+  const modules = await listRemoteModules();
 
   if (modules.some((module) => module.id === options.id)) {
     throw new Error(`Module "${options.id}" already exists.`);
@@ -378,12 +293,12 @@ async function createModule(options: ModuleCreateOptions) {
     updatedAt: now,
   };
 
-  return createLocalModule(module);
+  return createRemoteModule(module);
 }
 
 async function findModule(moduleId: string) {
   try {
-    return await getLocalModule(moduleId);
+    return await getRemoteModule(moduleId);
   } catch (error) {
     if (error instanceof Error && error.message.includes("was not found")) {
       return undefined;
@@ -394,7 +309,7 @@ async function findModule(moduleId: string) {
 }
 
 async function updateModule(moduleId: string, options: ModuleUpdateOptions) {
-  const currentModule = await getLocalModule(moduleId);
+  const currentModule = await getRemoteModule(moduleId);
 
   if (!options.name && !options.status && options.health === undefined) {
     throw new Error("Provide at least one field to update.");
@@ -416,11 +331,11 @@ async function updateModule(moduleId: string, options: ModuleUpdateOptions) {
     updatedAt: new Date().toISOString(),
   };
 
-  return updateLocalModule(moduleId, updatedModule);
+  return updateRemoteModule(moduleId, updatedModule);
 }
 
 async function deleteModule(moduleId: string) {
-  await deleteLocalModule(moduleId);
+  await deleteRemoteModule(moduleId);
 }
 
 function parseModuleStatus(value: string): AllowedModuleStatus {
@@ -434,7 +349,7 @@ function parseModuleStatus(value: string): AllowedModuleStatus {
 }
 
 async function setModuleStatus(moduleId: string, status: AllowedModuleStatus) {
-  const currentModule = await getLocalModule(moduleId);
+  const currentModule = await getRemoteModule(moduleId);
   const updatedModule: HabitatModule = {
     ...currentModule,
     runtimeAttributes: {
@@ -444,16 +359,16 @@ async function setModuleStatus(moduleId: string, status: AllowedModuleStatus) {
     updatedAt: new Date().toISOString(),
   };
 
-  return updateLocalModule(moduleId, updatedModule);
+  return updateRemoteModule(moduleId, updatedModule);
 }
 
 async function getCurrentInventory() {
-  return getLocalInventory();
+  return getRemoteInventory();
 }
 
-function printRegistration(registration: StoredRegistration) {
-  const modules = readModules();
-  const databasePath = getDatabaseFilePath();
+async function printRegistration(registration: StoredRegistration) {
+  const modules = await listRemoteModules();
+  const localRegistration = readRegistration();
 
   console.log(`Registered habitat "${registration.displayName}".`);
   console.log(`Habitat ID: ${registration.habitatId}`);
@@ -462,11 +377,11 @@ function printRegistration(registration: StoredRegistration) {
   console.log(`Starter modules: ${registration.starterModules.length}`);
   console.log(`Local modules: ${modules.length}`);
   console.log(`Blueprints returned: ${registration.blueprints.length}`);
-  console.log(`Local state database: ${databasePath}`);
+  console.log(`Registered at: ${resolveRegisteredAt(registration, localRegistration)}`);
 }
 
-function ensureModulesHydrated(registration: StoredRegistration) {
-  const modules = readModules();
+async function ensureModulesHydrated(registration: StoredRegistration) {
+  const modules = await listRemoteModules();
 
   if (modules.length > 0 || registration.starterModules.length === 0) {
     return modules;
@@ -476,17 +391,22 @@ function ensureModulesHydrated(registration: StoredRegistration) {
     registration.starterModules,
     registration.registeredAt,
   );
-  writeModules(hydratedModules);
-  return hydratedModules;
+  return replaceRemoteModules(hydratedModules);
 }
 
-function readHydratedModules() {
-  const registration = readRegistration();
-  return registration ? ensureModulesHydrated(registration) : readModules();
+async function readHydratedModules() {
+  const registration = await getRemoteRegistration();
+
+  if (registration) {
+    return ensureModulesHydrated(registration);
+  }
+
+  return listRemoteModules();
 }
 
-function printStatus(status: HabitatStatus, registration: StoredRegistration) {
-  const modules = ensureModulesHydrated(registration);
+async function printStatus(status: HabitatStatus, registration: StoredRegistration) {
+  const modules = await ensureModulesHydrated(registration);
+  const localRegistration = readRegistration();
 
   console.log(`Habitat: ${status.displayName}`);
   console.log(`Habitat ID: ${status.id}`);
@@ -495,8 +415,7 @@ function printStatus(status: HabitatStatus, registration: StoredRegistration) {
   console.log(`Modules: ${modules.length}`);
   console.log(`Catalog version: ${status.catalogVersion}`);
   console.log(`Last seen: ${status.lastSeenAt ?? "never"}`);
-  console.log(`Local state database: ${getDatabaseFilePath()}`);
-  console.log(`Registered at: ${registration.registeredAt}`);
+  console.log(`Registered at: ${resolveRegisteredAt(registration, localRegistration)}`);
 }
 
 function getModuleStatus(module: HabitatModule) {
@@ -517,7 +436,6 @@ function getRuntimeNumber(module: HabitatModule, key: string) {
 function printModuleList(modules: HabitatModule[]) {
   if (modules.length === 0) {
     console.log("No modules found.");
-    console.log(`Local state database: ${getDatabaseFilePath()}`);
     return;
   }
 
@@ -657,7 +575,7 @@ function printModule(module: HabitatModule) {
 
 async function runTickCommand(ticksInput: string) {
   const ticks = parseTicks(ticksInput);
-  const modules = readHydratedModules();
+  const modules = await readHydratedModules();
   let solarIrradiance: SolarIrradiance | undefined;
   let solarIssueReason: string | undefined;
 
@@ -680,7 +598,7 @@ async function runTickCommand(ticksInput: string) {
     solarResult?.modules ?? result.modules,
     ticks,
   );
-  writeModules(constructionResult.modules);
+  await replaceRemoteModules(constructionResult.modules);
 
   console.log(`Executed ${result.ticksExecuted} ticks.`);
   console.log(`Power demand: ${result.totalPowerDemandKw} kW`);
@@ -712,6 +630,21 @@ async function runTickCommand(ticksInput: string) {
       `Completed construction: ${constructionResult.completedModuleIds.join(", ")}`,
     );
   }
+}
+
+async function runScanCommand(options: ScanOptions) {
+  const x = parseScanInteger(options.x, "x");
+  const y = parseScanInteger(options.y, "y");
+  const strength = parseScanInteger(options.strength, "strength", 0, 100);
+  const radius = parseScanInteger(options.radius, "radius", 0, 5);
+  const response = await scanWorld(x, y, strength, radius);
+
+  if (options.json) {
+    console.log(JSON.stringify(response, null, 2));
+    return;
+  }
+
+  console.log(formatWorldScan(response));
 }
 
 function formatYesNo(value: boolean | undefined) {
@@ -950,6 +883,7 @@ Commands:
   habitat blueprint list
   habitat blueprint show <blueprint-id>
   habitat resource list
+  habitat scan --x 3 --y -2 --strength 60 [--radius 0] [--json]
   habitat solar status
   habitat construction status
   habitat construction cancel <fabricator-id-or-alias>
@@ -1020,7 +954,7 @@ inventoryCommand
         ...inventory,
         [resourceType]: (inventory[resourceType] ?? 0) + parseQuantity(quantity),
       };
-      const result = await setLocalInventory(updatedInventory);
+      const result = await setRemoteInventory(updatedInventory);
       console.log(
         `Supply cache inventory updated: ${resourceType} = ${result[resourceType]}`,
       );
@@ -1043,7 +977,7 @@ inventoryCommand
 
       if (availableQuantity < removalQuantity) {
         throw new Error(
-          `Insufficient local inventory for required resource "${resourceType}".`,
+          `Insufficient inventory for required resource "${resourceType}".`,
         );
       }
 
@@ -1051,7 +985,7 @@ inventoryCommand
         ...inventory,
         [resourceType]: availableQuantity - removalQuantity,
       };
-      const result = await setLocalInventory(updatedInventory);
+      const result = await setRemoteInventory(updatedInventory);
       console.log(
         `Supply cache inventory updated: ${resourceType} = ${result[resourceType]}`,
       );
@@ -1090,7 +1024,15 @@ program
   .argument("<blueprint-id>", "Blueprint ID")
   .action(async (blueprintId: string) => {
     try {
-      const result = await startConstruction(blueprintId);
+      const registration = await getRemoteRegistration();
+
+      if (!registration) {
+        throw new Error("No remote registration found. Run habitat register first.");
+      }
+
+      const modules = await readHydratedModules();
+      const result = await startConstruction(blueprintId, modules);
+      await replaceRemoteModules(result.modules);
       const job = result.fabricator.constructionJob;
 
       console.log(`Started construction of "${result.blueprint.blueprintId}".`);
@@ -1107,9 +1049,9 @@ program
 constructionCommand
   .command("status")
   .description("Show active construction jobs and remaining build time.")
-  .action(() => {
+  .action(async () => {
     try {
-      console.log(formatConstructionStatusTable(readHydratedModules()));
+      console.log(formatConstructionStatusTable(await readHydratedModules()));
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1120,10 +1062,11 @@ constructionCommand
   .command("cancel")
   .description("Cancel one active construction job.")
   .argument("<fabricator-id-or-alias>", "Fabricator ID or alias")
-  .action((moduleId: string) => {
+  .action(async (moduleId: string) => {
     try {
-      const result = cancelConstructionJob(readHydratedModules(), moduleId);
-      writeModules(result.modules);
+      const modules = await readHydratedModules();
+      const result = cancelConstructionJob(modules, moduleId);
+      await replaceRemoteModules(result.modules);
       console.log(
         `Cancelled construction job for ${result.fabricatorAlias}. No materials were refunded.`,
       );
@@ -1173,7 +1116,7 @@ program
   .action(async (options: RegisterOptions) => {
     try {
       const registration = await registerHabitat(options.name);
-      printRegistration(registration);
+      await printRegistration(registration);
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1185,14 +1128,14 @@ program
   .description("Show this habitat registration status from Kepler.")
   .action(async () => {
     try {
-      const registration = readRegistration();
+      const registration = await getRemoteRegistration();
 
       if (!registration) {
-        throw new Error("No local registration found. Run habitat register first.");
+        throw new Error("No remote registration found. Run habitat register first.");
       }
 
       const status = await fetchRegistrationStatus(registration);
-      printStatus(status, registration);
+      await printStatus(status, registration);
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1204,15 +1147,32 @@ program
   .description("Delete this habitat registration from Kepler and local state.")
   .action(async () => {
     try {
-      const registration = readRegistration();
+      const registration = await getRemoteRegistration();
 
       if (!registration) {
-        throw new Error("No local registration found. Nothing to unregister.");
+        throw new Error("No remote registration found. Nothing to unregister.");
       }
 
-      await unregisterHabitat(registration);
+      await unregisterHabitat();
       console.log(`Unregistered habitat "${registration.displayName}".`);
-      console.log(`Cleared local state in ${getDatabaseFilePath()}`);
+      console.log(`Cleared remote state at ${registration.baseUrl}`);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("scan")
+  .description("Scan nearby world tiles for estimated resources.")
+  .requiredOption("--x <integer>", "Current x coordinate")
+  .requiredOption("--y <integer>", "Current y coordinate")
+  .requiredOption("--strength <0-100>", "Effective sensor strength")
+  .option("--radius <0-5>", "Scan radius, default 0", "0")
+  .option("--json", "Print the complete JSON response")
+  .action(async (options: ScanOptions) => {
+    try {
+      await runScanCommand(options);
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1298,7 +1258,7 @@ moduleCommand
   .description("List local modules.")
   .action(async () => {
     try {
-      printModuleList(await listLocalModules());
+      printModuleList(await readHydratedModules());
     } catch (error) {
       printError(error);
       process.exit(1);
@@ -1310,7 +1270,7 @@ moduleCommand
   .description("Show module states with current power draw.")
   .action(async () => {
     try {
-      console.log(formatModulePowerStatusTable(await listLocalModules()));
+      console.log(formatModulePowerStatusTable(await readHydratedModules()));
     } catch (error) {
       printError(error);
       process.exit(1);

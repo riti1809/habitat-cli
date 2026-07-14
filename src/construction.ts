@@ -4,9 +4,6 @@ import { getCurrentModuleState } from "./power-tick";
 import {
   type ConstructionJob,
   type HabitatModule,
-  readModules,
-  readRegistration,
-  writeModules,
 } from "./habitat-store";
 import {
   subtractSupplyCacheInventory,
@@ -16,6 +13,7 @@ import {
 export type ConstructionResult = {
   blueprint: BlueprintDetail;
   fabricator: HabitatModule;
+  modules: HabitatModule[];
   inventory: HabitatInventory;
 };
 
@@ -382,18 +380,12 @@ export function cancelConstructionJob(
 
 export async function startConstruction(
   blueprintId: string,
+  modules: HabitatModule[],
 ): Promise<ConstructionResult> {
-  const registration = readRegistration();
-
-  if (!registration) {
-    throw new Error("No local registration found. Run habitat register first.");
-  }
-
   const blueprint = await getBlueprint(blueprintId);
   const requiredResources = getRequiredResources(blueprint);
   const outputModuleType = getOutputModuleType(blueprint);
   const buildTicks = getBuildTicks(blueprint);
-  const modules = readModules();
   const fabricator = getWorkshopFabricator(modules);
 
   if (!fabricator) {
@@ -435,11 +427,10 @@ export async function startConstruction(
     module.id === fabricator.id ? updatedFabricator : module,
   );
 
-  writeModules(updatedModules);
-
   return {
     blueprint,
     fabricator: updatedFabricator,
+    modules: updatedModules,
     inventory: updatedInventory,
   };
 }
