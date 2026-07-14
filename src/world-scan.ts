@@ -91,6 +91,14 @@ export function isWorldScanResponse(value: unknown): value is WorldScanResponse 
   );
 }
 
+export function parseWorldScanResponse(value: unknown): WorldScanResponse {
+  if (!isWorldScanResponse(value)) {
+    throw new Error("Kepler returned an unexpected world scan response.");
+  }
+
+  return value;
+}
+
 function formatCandidate(candidate: WorldScanProbability) {
   return candidate.resourceType ?? "none";
 }
@@ -140,11 +148,8 @@ function formatMultipleTiles(tiles: WorldScanTile[]) {
 }
 
 export function formatWorldScan(value: unknown) {
-  if (!isWorldScanResponse(value)) {
-    throw new Error("Kepler returned an unexpected world scan response.");
-  }
-
-  const { scan } = value;
+  const parsed = parseWorldScanResponse(value);
+  const { scan } = parsed;
   const header = [
     `Scan origin: (${scan.origin.x}, ${scan.origin.y})`,
     `Sensor strength: ${scan.sensorStrength}`,
@@ -159,4 +164,8 @@ export function formatWorldScan(value: unknown) {
       ? formatOneTile(scan.tiles[0])
       : formatMultipleTiles(scan.tiles),
   ].join("\n");
+}
+
+export function formatWorldScanJson(value: unknown) {
+  return JSON.stringify(parseWorldScanResponse(value), null, 2);
 }

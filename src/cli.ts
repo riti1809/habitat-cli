@@ -52,7 +52,7 @@ import {
   unregisterHabitat as unregisterRemoteHabitat,
   updateModule as updateRemoteModule,
 } from "./local-api";
-import { formatWorldScan } from "./world-scan";
+import { formatWorldScan, formatWorldScanJson } from "./world-scan";
 
 type RegisterOptions = {
   name: string;
@@ -640,7 +640,7 @@ async function runScanCommand(options: ScanOptions) {
   const response = await scanWorld(x, y, strength, radius);
 
   if (options.json) {
-    console.log(JSON.stringify(response, null, 2));
+    console.log(formatWorldScanJson(response));
     return;
   }
 

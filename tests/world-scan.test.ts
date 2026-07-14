@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { createBackendApp } from "../src/server.ts";
 import { scanWorld } from "../src/local-api.ts";
 import { writeRegistration, type StoredRegistration } from "../src/habitat-store.ts";
-import { formatWorldScan } from "../src/world-scan.ts";
+import { formatWorldScan, formatWorldScanJson } from "../src/world-scan.ts";
 
 function createTempHabitatDir() {
   const tempDir = mkdtempSync(join(tmpdir(), "habitat-scan-"));
@@ -138,6 +138,62 @@ test("local scan client calls the local Habitat API", async () => {
   const server = createServer((request, response) => {
     requests.push(request.url ?? "");
     response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(
+      JSON.stringify({
+        scan: {
+          modelVersion: "resource-probability-v2",
+          origin: { x: 3, y: -2 },
+          sensorStrength: 60,
+          radiusTiles: 0,
+          tiles: [],
+        },
+      }),
+    );
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("Could not determine mock server address.");
+  }
+
+  process.env.HABITAT_API_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+  try {
+    assert.deepEqual(await scanWorld(3, -2, 60, 0), {
+      scan: {
+        modelVersion: "resource-probability-v2",
+        origin: { x: 3, y: -2 },
+        sensorStrength: 60,
+        radiusTiles: 0,
+        tiles: [],
+      },
+    });
+  } finally {
+    if (previousBaseUrl === undefined) {
+      delete process.env.HABITAT_API_BASE_URL;
+    } else {
+      process.env.HABITAT_API_BASE_URL = previousBaseUrl;
+    }
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  assert.deepEqual(requests, [
+    "/world/scan?x=3&y=-2&sensorStrength=60&radiusTiles=0",
+  ]);
+});
+
+test("local scan client rejects malformed responses", async () => {
+  const previousBaseUrl = process.env.HABITAT_API_BASE_URL;
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ scan: { tiles: [] } }));
   });
 
@@ -155,7 +211,10 @@ test("local scan client calls the local Habitat API", async () => {
   process.env.HABITAT_API_BASE_URL = `http://127.0.0.1:${address.port}`;
 
   try {
-    assert.deepEqual(await scanWorld(3, -2, 60, 0), { scan: { tiles: [] } });
+    await assert.rejects(
+      scanWorld(3, -2, 60, 0),
+      /Kepler returned an unexpected world scan response\./,
+    );
   } finally {
     if (previousBaseUrl === undefined) {
       delete process.env.HABITAT_API_BASE_URL;
@@ -166,10 +225,38 @@ test("local scan client calls the local Habitat API", async () => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
+});
 
-  assert.deepEqual(requests, [
-    "/world/scan?x=3&y=-2&sensorStrength=60&radiusTiles=0",
-  ]);
+test("world scan JSON output prints the validated raw response", () => {
+  assert.deepEqual(
+    JSON.parse(
+      formatWorldScanJson({
+        scan: {
+          modelVersion: "resource-probability-v2",
+          origin: { x: 3, y: -2 },
+          sensorStrength: 60,
+          radiusTiles: 0,
+          tiles: [],
+        },
+      }),
+    ),
+    {
+      scan: {
+        modelVersion: "resource-probability-v2",
+        origin: { x: 3, y: -2 },
+        sensorStrength: 60,
+        radiusTiles: 0,
+        tiles: [],
+      },
+    },
+  );
+});
+
+test("world scan JSON output rejects malformed responses", () => {
+  assert.throws(
+    () => formatWorldScanJson({ scan: { tiles: [] } }),
+    /Kepler returned an unexpected world scan response\./,
+  );
 });
 
 test("world scan formatting shows the full one-tile probability table", () => {

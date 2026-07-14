@@ -2,7 +2,7 @@ import { requestJson } from "./api-client";
 import type { HabitatInventory } from "./habitat-inventory";
 import type { HabitatModule } from "./habitat-store";
 import type { StoredRegistration } from "./habitat-store";
-import type { WorldScanResponse } from "./world-scan";
+import { parseWorldScanResponse, type WorldScanResponse } from "./world-scan";
 
 type ModulesResponse = {
   modules: HabitatModule[];
@@ -129,5 +129,7 @@ export async function scanWorld(
     sensorStrength: String(sensorStrength),
     radiusTiles: String(radiusTiles),
   });
-  return requestJson<WorldScanResponse>(`/world/scan?${query.toString()}`);
+  return parseWorldScanResponse(
+    await requestJson<WorldScanResponse>(`/world/scan?${query.toString()}`),
+  );
 }
