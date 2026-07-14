@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node scripts/run-bun-command.mjs run src/cli.ts",
-    "server": "node scripts/run-bun-command.mjs run src/server.ts",
+    "server": "node scripts/run-habitat-server.mjs",
     "check": "tsc --noEmit",
     "test": "node scripts/run-bun-test.mjs"
   },
