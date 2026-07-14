@@ -17,3 +17,20 @@ export function restartManagedService(runCommand) {
 
   return result.status ?? 1;
 }
+
+export async function waitForServer(
+  probe,
+  { attempts = 50, wait = () => new Promise((resolve) => setTimeout(resolve, 100)) } = {},
+) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await probe()) {
+      return true;
+    }
+
+    if (attempt < attempts - 1) {
+      await wait();
+    }
+  }
+
+  return false;
+}

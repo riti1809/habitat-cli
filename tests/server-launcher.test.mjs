@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   restartManagedService,
   userServiceIsLoaded,
+  waitForServer,
 } from "../scripts/habitat-server-launcher.mjs";
 
 test("recognizes a loaded Habitat user service", () => {
@@ -33,4 +34,19 @@ test("restarts the Habitat user service", () => {
       options: { stdio: "inherit" },
     },
   ]);
+});
+
+test("waits for the restarted server to accept requests", async () => {
+  let attempts = 0;
+
+  const ready = await waitForServer(
+    async () => {
+      attempts += 1;
+      return attempts === 3;
+    },
+    { attempts: 3, wait: async () => {} },
+  );
+
+  assert.equal(ready, true);
+  assert.equal(attempts, 3);
 });
