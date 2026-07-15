@@ -45,6 +45,7 @@ import {
   getModule as getRemoteModule,
   getRegistration as getRemoteRegistration,
   listHumans as listRemoteHumans,
+  moveHuman as moveRemoteHuman,
   listModules as listRemoteModules,
   registerHabitat as registerRemoteHabitat,
   replaceModules as replaceRemoteModules,
@@ -929,6 +930,21 @@ humanCommand
       console.log(
         options.json ? JSON.stringify(humans, null, 2) : formatHumanList(humans),
       );
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+humanCommand
+  .command("move")
+  .description("Move one human to another habitat module.")
+  .argument("<human-id>", "Human ID")
+  .argument("<module-id>", "Destination module ID or alias")
+  .action(async (humanId: string, moduleId: string) => {
+    try {
+      const human = await moveRemoteHuman(humanId, moduleId);
+      console.log(`Moved "${human.displayName}" to module "${human.locationModuleId}".`);
     } catch (error) {
       printError(error);
       process.exit(1);

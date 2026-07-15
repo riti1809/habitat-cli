@@ -9,6 +9,7 @@ import {
   getModule,
   listHumans,
   listModules,
+  moveHuman,
   setInventory,
   updateModule,
 } from "../src/local-api.ts";
@@ -257,4 +258,44 @@ test("local api client lists humans from the Habitat backend", async () => {
   });
 
   assert.deepEqual(requests, ["GET /humans"]);
+});
+
+test("local api client moves a human through the Habitat backend", async () => {
+  const previousBaseUrl = process.env.HABITAT_API_BASE_URL;
+  const requests: Array<{ method: string; path: string; body: unknown }> = [];
+
+  await withServer(async (request, response) => {
+    let body: unknown;
+    if (request.method === "PUT") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      body = JSON.parse(Buffer.concat(chunks).toString());
+    }
+    requests.push({ method: request.method ?? "GET", path: request.url ?? "", body });
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ human: {
+      id: "human-1",
+      displayName: "Abigail",
+      locationModuleId: "life-support-1",
+    } }));
+  }, async (baseUrl) => {
+    process.env.HABITAT_API_BASE_URL = baseUrl;
+
+    try {
+      assert.deepEqual(await moveHuman("human-1", "life-support-1"), {
+        id: "human-1",
+        displayName: "Abigail",
+        locationModuleId: "life-support-1",
+      });
+    } finally {
+      if (previousBaseUrl === undefined) delete process.env.HABITAT_API_BASE_URL;
+      else process.env.HABITAT_API_BASE_URL = previousBaseUrl;
+    }
+  });
+
+  assert.deepEqual(requests, [{
+    method: "PUT",
+    path: "/humans/human-1",
+    body: { locationModuleId: "life-support-1" },
+  }]);
 });

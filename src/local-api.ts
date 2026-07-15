@@ -39,6 +39,19 @@ export async function listHumans() {
   return response.humans;
 }
 
+export async function moveHuman(humanId: string, moduleId: string) {
+  const response = await requestJson<{ human: StarterHuman }>(
+    `/humans/${encodeURIComponent(humanId)}`,
+    {
+      method: "PUT",
+      body: {
+        locationModuleId: moduleId,
+      },
+    },
+  );
+  return response.human;
+}
+
 export async function getRegistration() {
   const response = await requestJson<RegistrationResponse>("/registration");
   return response.registration;

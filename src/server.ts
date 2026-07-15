@@ -24,7 +24,12 @@ import {
   writeSupplyCacheInventory,
 } from "./habitat-inventory";
 import type { SolarIrradiance } from "./kepler-solar";
-import { readHabitatHumans, type HabitatHuman } from "./humans";
+import {
+  HumanMoveError,
+  moveHabitatHuman,
+  readHabitatHumans,
+  type HabitatHuman,
+} from "./humans";
 
 export type BackendRegistrationView = {
   habitatUuid: string;
@@ -417,6 +422,30 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     return c.json<BackendHumansResponse>({ humans });
   });
 
+  app.put("/humans/:humanId", async (c) => {
+    const humanId = c.req.param("humanId");
+    const parsed = (await c.req.json()) as { locationModuleId?: string } | null;
+
+    if (!parsed?.locationModuleId) {
+      return jsonError("Provide a destination module ID.");
+    }
+
+    try {
+      const human = moveHabitatHuman(
+        humanId,
+        parsed.locationModuleId,
+        options.cwd ?? process.cwd(),
+      );
+      logHabitatApi(c.req.method, `/humans/${humanId}`, `moved to ${human.locationModuleId}`);
+      return c.json<{ human: HabitatHuman }>({ human });
+    } catch (error) {
+      if (error instanceof HumanMoveError) {
+        return jsonError(error.message, error.status);
+      }
+      throw error;
+    }
+  });
+
   app.get("/modules/:moduleId", (c) => {
     const moduleId = c.req.param("moduleId");
     const modules = readModules(options.cwd ?? process.cwd());
@@ -527,6 +556,22 @@ export function createBackendApp(options: BackendAppOptions = {}) {
         `module "${moduleId}" was not found`,
       );
       return jsonError(`Module "${moduleId}" was not found.`, 404);
+    }
+
+    const occupied = readHabitatHumans(options.cwd ?? process.cwd()).some(
+      (human) => human.locationModuleId === modules[moduleIndex].id,
+    );
+
+    if (occupied) {
+      logHabitatApi(
+        c.req.method,
+        `/modules/${moduleId}`,
+        `module "${modules[moduleIndex].id}" is occupied`,
+      );
+      return jsonError(
+        `Module "${modules[moduleIndex].id}" cannot be deleted while a human is inside it.`,
+        409,
+      );
     }
 
     modules.splice(moduleIndex, 1);
