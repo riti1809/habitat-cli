@@ -40,7 +40,9 @@ test("dashboard power and tick routes return server-owned simulation state", asy
     const app = createBackendApp({ cwd, apiToken: "test-token", keplerBaseUrl: `http://127.0.0.1:${address.port}` });
     const power = await app.request("http://localhost/power");
     assert.equal(power.status, 200);
-    assert.deepEqual((await power.json()).powerConsumptionKw, 2);
+    const powerBody = await power.json() as { powerConsumptionKw: number; batteryCapacityKwh: number };
+    assert.equal(powerBody.powerConsumptionKw, 2);
+    assert.equal(powerBody.batteryCapacityKwh, 100);
 
     const tick = await app.request("http://localhost/tick", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticks: 60 }),

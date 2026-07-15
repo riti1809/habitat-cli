@@ -131,7 +131,6 @@ test("GET /registration returns the stored registration envelope", async () => {
           schema: {},
         },
       },
-      apiToken: "test-token",
     },
   });
 });
@@ -254,14 +253,13 @@ test("POST /registration stores the registration and hydrates starter modules", 
           };
         };
         lastStatus?: unknown;
-        apiToken: string;
       };
     };
 
     assert.equal(responseBody.registration.habitatId, "habitat-123");
     assert.equal(responseBody.registration.displayName, "Habitat One");
     assert.equal(responseBody.registration.baseUrl, baseUrl);
-    assert.equal(responseBody.registration.apiToken, "test-token");
+    assert.equal("apiToken" in responseBody.registration, false);
     assert.equal(responseBody.registration.starterModules.length, 2);
     assert.equal(responseBody.registration.starterModules[0].id, "command-1");
     assert.deepEqual(responseBody.registration.starterHumans, [

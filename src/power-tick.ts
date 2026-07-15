@@ -293,7 +293,10 @@ export function runPowerTicks(
 }
 
 function getBatteryRemainingCapacityKwh(module: HabitatModule) {
-  const capacityKwh = getRuntimeNumber(module, "capacityKwh") ?? 0;
+  const capacityKwh =
+    getRuntimeNumber(module, "capacityKwh") ??
+    getRuntimeNumber(module, "energyStorageKwh") ??
+    0;
   const currentEnergyKwh = getRuntimeNumber(module, "currentEnergyKwh") ?? 0;
   return Math.max(0, capacityKwh - currentEnergyKwh);
 }

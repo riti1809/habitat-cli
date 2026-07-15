@@ -58,7 +58,6 @@ export type BackendRegistrationView = {
   blueprints: StoredRegistration["blueprints"];
   contracts?: RegistrationContracts;
   lastStatus?: StoredRegistration["lastStatus"];
-  apiToken: string;
 };
 
 export type BackendRegistrationResponse = {
@@ -301,7 +300,11 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       0,
     );
     const batteryCapacityKwh = batteries.reduce(
-      (total, module) => total + (typeof module.runtimeAttributes.capacityKwh === "number" ? module.runtimeAttributes.capacityKwh : 0),
+      (total, module) => total + (typeof module.runtimeAttributes.capacityKwh === "number"
+        ? module.runtimeAttributes.capacityKwh
+        : typeof module.runtimeAttributes.energyStorageKwh === "number"
+          ? module.runtimeAttributes.energyStorageKwh
+          : 0),
       0,
     );
 
@@ -401,7 +404,6 @@ export function createBackendApp(options: BackendAppOptions = {}) {
         registration: {
           ...registration,
           starterHumans: registration.starterHumans ?? [],
-          apiToken,
         },
       },
       201,
@@ -452,9 +454,7 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       return c.json<BackendRegistrationResponse>({ registration: null });
     }
 
-    const apiToken = getApiToken(options);
-
-    if (!apiToken) {
+    if (!getApiToken(options)) {
       logHabitatApi(
         c.req.method,
         "/registration",
@@ -469,7 +469,6 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       registration: {
         ...registration,
         starterHumans: registration.starterHumans ?? [],
-        apiToken,
       },
     });
     logHabitatApi(
