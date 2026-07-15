@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 
 import { ApiClientError, requestJson, requestJsonWithStatus } from "./api-client";
 import {
@@ -25,11 +26,26 @@ import {
 } from "./habitat-inventory";
 import type { SolarIrradiance } from "./kepler-solar";
 import {
+  applySolarGeneration,
+  getTotalCurrentPowerGenerationKw,
+  getTotalCurrentPowerDrawKw,
+  runPowerTicks,
+} from "./power-tick";
+import {
   HumanMoveError,
   moveHabitatHuman,
   readHabitatHumans,
   type HabitatHuman,
 } from "./humans";
+import {
+  ExplorationError,
+  deployExplorer,
+  dockExplorer,
+  formatExplorationStatus,
+  moveExplorer,
+  readExplorationState,
+  type ExplorationState,
+} from "./exploration";
 
 export type BackendRegistrationView = {
   habitatUuid: string;
@@ -57,12 +73,26 @@ export type BackendHumansResponse = {
   humans: HabitatHuman[];
 };
 
+export type BackendExplorationResponse = {
+  exploration: ExplorationState;
+};
+
 export type BackendModuleResponse = {
   module: HabitatModule;
 };
 
 export type BackendInventoryResponse = {
   inventory: HabitatInventory;
+};
+
+export type BackendPowerSnapshot = {
+  modules: HabitatModule[];
+  powerGenerationKw: number;
+  powerConsumptionKw: number;
+  netPowerKw: number;
+  batteryEnergyKwh: number;
+  batteryCapacityKwh: number;
+  solarIrradiance: SolarIrradiance | null;
 };
 
 export type BackendAppOptions = {
@@ -245,6 +275,46 @@ function findModuleIndex(modules: HabitatModule[], moduleId: string) {
 
 export function createBackendApp(options: BackendAppOptions = {}) {
   const app = new Hono();
+  app.use("*", cors());
+
+  const getPowerSnapshot = async (cwd: string): Promise<BackendPowerSnapshot> => {
+    const modules = readModules(cwd);
+    let solarIrradiance: SolarIrradiance | null = null;
+
+    try {
+      solarIrradiance = await proxyKeplerJson<{ solarIrradiance: SolarIrradiance }>(
+        "GET",
+        "/world/solar-irradiance",
+        "/world/solar-irradiance",
+        options,
+        false,
+      ).then((response) => response.solarIrradiance);
+    } catch {
+      solarIrradiance = null;
+    }
+
+    const powerGenerationKw = getTotalCurrentPowerGenerationKw(modules);
+    const powerConsumptionKw = getTotalCurrentPowerDrawKw(modules);
+    const batteries = modules.filter((module) => module.moduleType === "basic-battery");
+    const batteryEnergyKwh = batteries.reduce(
+      (total, module) => total + (typeof module.runtimeAttributes.currentEnergyKwh === "number" ? module.runtimeAttributes.currentEnergyKwh : 0),
+      0,
+    );
+    const batteryCapacityKwh = batteries.reduce(
+      (total, module) => total + (typeof module.runtimeAttributes.capacityKwh === "number" ? module.runtimeAttributes.capacityKwh : 0),
+      0,
+    );
+
+    return {
+      modules,
+      powerGenerationKw,
+      powerConsumptionKw,
+      netPowerKw: powerGenerationKw - powerConsumptionKw,
+      batteryEnergyKwh,
+      batteryCapacityKwh,
+      solarIrradiance,
+    };
+  };
 
   app.post("/registration", async (c) => {
     const parsed = (await c.req.json()) as { displayName?: string } | null;
@@ -416,6 +486,44 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     return c.json<BackendModulesResponse>({ modules });
   });
 
+  app.get("/power", async (c) => {
+    const snapshot = await getPowerSnapshot(options.cwd ?? process.cwd());
+    logHabitatApi(c.req.method, "/power", `${snapshot.powerConsumptionKw} kW consumption`);
+    return c.json(snapshot);
+  });
+
+  app.post("/tick", async (c) => {
+    const parsed = (await c.req.json()) as { ticks?: number } | null;
+    const ticks = parsed?.ticks;
+
+    if (!Number.isInteger(ticks) || (ticks as number) <= 0) {
+      return jsonError("Ticks must be a positive integer.");
+    }
+
+    const cwd = options.cwd ?? process.cwd();
+    const modules = readModules(cwd);
+    try {
+      const drained = runPowerTicks(modules, ticks as number);
+      let updatedModules = drained.modules;
+      let solar = null;
+
+      if (getTotalCurrentPowerGenerationKw(updatedModules) > 0) {
+        const snapshot = await getPowerSnapshot(cwd);
+        if (snapshot.solarIrradiance) {
+          solar = applySolarGeneration(updatedModules, ticks as number, snapshot.solarIrradiance);
+          updatedModules = solar.modules;
+        }
+      }
+
+      writeModules(updatedModules, cwd);
+      const power = await getPowerSnapshot(cwd);
+      logHabitatApi(c.req.method, "/tick", `advanced ${ticks} ticks`);
+      return c.json({ ticksExecuted: ticks, power, solar });
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : String(error), 409);
+    }
+  });
+
   app.get("/humans", (c) => {
     const humans = readHabitatHumans(options.cwd ?? process.cwd());
     logHabitatApi(c.req.method, "/humans", `${humans.length} humans`);
@@ -442,6 +550,46 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       if (error instanceof HumanMoveError) {
         return jsonError(error.message, error.status);
       }
+      throw error;
+    }
+  });
+
+  app.get("/exploration", (c) => {
+    const exploration = readExplorationState(options.cwd ?? process.cwd());
+    logHabitatApi(c.req.method, "/exploration", formatExplorationStatus(exploration).split("\n")[0]);
+    return c.json<BackendExplorationResponse>({ exploration });
+  });
+
+  app.post("/exploration/deploy", async (c) => {
+    const parsed = (await c.req.json()) as { humanId?: string } | null;
+    if (!parsed?.humanId) return jsonError("Provide a human ID.");
+    try {
+      const exploration = deployExplorer(parsed.humanId, options.cwd ?? process.cwd());
+      return c.json<BackendExplorationResponse>({ exploration });
+    } catch (error) {
+      if (error instanceof ExplorationError) return jsonError(error.message, error.status);
+      throw error;
+    }
+  });
+
+  app.post("/exploration/move", async (c) => {
+    const parsed = (await c.req.json()) as { x?: number; y?: number } | null;
+    if (parsed?.x === undefined || parsed.y === undefined) return jsonError("Provide x and y coordinates.");
+    try {
+      const exploration = moveExplorer(parsed.x, parsed.y, options.cwd ?? process.cwd());
+      return c.json<BackendExplorationResponse>({ exploration });
+    } catch (error) {
+      if (error instanceof ExplorationError) return jsonError(error.message, error.status);
+      throw error;
+    }
+  });
+
+  app.post("/exploration/dock", (c) => {
+    try {
+      const exploration = dockExplorer(options.cwd ?? process.cwd());
+      return c.json<BackendExplorationResponse>({ exploration });
+    } catch (error) {
+      if (error instanceof ExplorationError) return jsonError(error.message, error.status);
       throw error;
     }
   });

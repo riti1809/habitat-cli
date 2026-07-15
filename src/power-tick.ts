@@ -106,6 +106,21 @@ function getSolarGenerationKw(module: HabitatModule): number {
   return generation ?? 0;
 }
 
+export function getCurrentPowerGenerationKw(module: HabitatModule): number {
+  if (!isOnlineSolarGenerationModule(module)) {
+    return 0;
+  }
+
+  return getSolarGenerationKw(module);
+}
+
+export function getTotalCurrentPowerGenerationKw(modules: HabitatModule[]): number {
+  return modules.reduce(
+    (total, module) => total + getCurrentPowerGenerationKw(module),
+    0,
+  );
+}
+
 function isSolarGenerationModule(module: HabitatModule) {
   if (module.constructionJob) {
     return false;
