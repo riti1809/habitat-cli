@@ -55,12 +55,14 @@ import {
   replaceModules as replaceRemoteModules,
   setInventory as setRemoteInventory,
   scanWorld,
+  collectResource,
   unregisterHabitat as unregisterRemoteHabitat,
   updateModule as updateRemoteModule,
 } from "./local-api";
 import { formatWorldScan, formatWorldScanJson } from "./world-scan";
 import { formatHumanList } from "./humans";
 import { formatExplorationStatus } from "./exploration";
+import { formatCollection } from "./collection";
 
 type RegisterOptions = {
   name: string;
@@ -655,6 +657,12 @@ async function runScanCommand(options: ScanOptions) {
   }
 
   console.log(formatWorldScan(response));
+}
+
+async function runCollectCommand(quantity: string) {
+  const parsed = parseQuantity(quantity);
+  const response = await collectResource(parsed);
+  console.log(formatCollection(response.collection, response.exploration));
 }
 
 function formatYesNo(value: boolean | undefined) {
@@ -1259,6 +1267,18 @@ program
   .action(async (options: ScanOptions) => {
     try {
       await runScanCommand(options);
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("collect <quantity-kg>")
+  .description("Collect material at the deployed explorer's position.")
+  .action(async (quantity: string) => {
+    try {
+      await runCollectCommand(quantity);
     } catch (error) {
       printError(error);
       process.exit(1);

@@ -3,8 +3,9 @@ import type { HabitatInventory } from "./habitat-inventory";
 import type { HabitatModule } from "./habitat-store";
 import type { StoredRegistration } from "./habitat-store";
 import type { StarterHuman } from "./habitat-store";
-import type { ExplorationState } from "./exploration";
 import { parseWorldScanResponse, type WorldScanResponse } from "./world-scan";
+import type { ExplorationState } from "./exploration";
+import type { WorldCollection } from "./collection";
 
 type ModulesResponse = {
   modules: HabitatModule[];
@@ -77,6 +78,13 @@ export async function dockExplorer() {
     method: "POST",
   });
   return response.exploration;
+}
+
+export async function collectResource(quantityKg: number) {
+  return requestJson<{ collection: WorldCollection; exploration: ExplorationState }>("/collection", {
+    method: "POST",
+    body: { quantityKg },
+  });
 }
 
 export async function getRegistration() {

@@ -46,6 +46,11 @@ import {
   readExplorationState,
   type ExplorationState,
 } from "./exploration";
+import {
+  persistCollection,
+  validateCollection,
+  type WorldCollectionResponse,
+} from "./collection";
 
 export type BackendRegistrationView = {
   habitatUuid: string;
@@ -248,11 +253,14 @@ async function proxyKeplerJson<TResponse>(
   keplerPath: string,
   options: BackendAppOptions,
   requiresToken = true,
+  body?: unknown,
 ) {
   try {
     const response = await requestJsonWithStatus<TResponse>(path, {
+      method,
       baseUrl: getKeplerBaseUrl(options),
       apiToken: requiresToken ? getKeplerToken(options) : undefined,
+      body,
     });
     logKepler(method, keplerPath, response.status);
     return response.data;
@@ -589,6 +597,29 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       return c.json<BackendExplorationResponse>({ exploration });
     } catch (error) {
       if (error instanceof ExplorationError) return jsonError(error.message, error.status);
+      throw error;
+    }
+  });
+
+  app.post("/collection", async (c) => {
+    const parsed = (await c.req.json()) as { quantityKg?: number } | null;
+    if (parsed?.quantityKg === undefined) return jsonError("Provide quantityKg.");
+
+    try {
+      const { state, habitatId } = validateCollection(parsed.quantityKg, options.cwd ?? process.cwd());
+      const response = await proxyKeplerJson<WorldCollectionResponse>(
+        "POST",
+        "/world/collect",
+        "/world/collect",
+        options,
+        true,
+        { habitatId, x: state.x, y: state.y, quantityKg: parsed.quantityKg },
+      );
+      const exploration = persistCollection(state, response.collection, options.cwd ?? process.cwd());
+      return c.json({ collection: response.collection, exploration });
+    } catch (error) {
+      if (error instanceof ExplorationError) return jsonError(error.message, error.status);
+      if (error instanceof Response) return error;
       throw error;
     }
   });

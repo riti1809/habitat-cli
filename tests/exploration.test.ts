@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createBackendApp } from "../src/server.ts";
-import { readExplorationState } from "../src/exploration.ts";
+import { readExplorationState, writeExplorationState } from "../src/exploration.ts";
 import { writeModules, writeRegistration, type HabitatModule, type StoredRegistration } from "../src/habitat-store.ts";
 
 function setup() {
@@ -81,4 +82,73 @@ test("EVA deployment requires the human to be in the suitport and allows only on
     method: "POST", body: JSON.stringify({ humanId: "human-1" }), headers: { "Content-Type": "application/json" },
   });
   assert.equal(second.status, 409);
+});
+
+test("collection sends saved position and persists material only after Kepler success", async () => {
+  const { cwd } = setup();
+  const requests: Array<{ body: string; authorization: string | null }> = [];
+  writeExplorationState({
+    deployedHumanId: "human-1", x: 4, y: -2, carriedResources: {}, maxCarryingCapacityKg: 20,
+  }, cwd);
+
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      requests.push({ body, authorization: request.headers.authorization ?? null });
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ collection: {
+        x: 4, y: -2, resourceType: "ferrite", unit: "kg", collectedKg: 5, remainingKg: 175,
+      } }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const app = createBackendApp({ cwd, apiToken: "test-token", keplerBaseUrl: `http://127.0.0.1:${address.port}` });
+    const response = await app.request("http://localhost/collection", {
+      method: "POST", body: JSON.stringify({ quantityKg: 5 }), headers: { "Content-Type": "application/json" },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(requests[0].body), { habitatId: "habitat-1", x: 4, y: -2, quantityKg: 5 });
+    assert.equal(requests[0].authorization, "Bearer test-token");
+    assert.deepEqual(readExplorationState(cwd).carriedResources, { ferrite: 5 });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("collection validation and Kepler rejection preserve local carried resources", async () => {
+  const { cwd } = setup();
+  writeExplorationState({
+    deployedHumanId: "human-1", x: 0, y: 0, carriedResources: { ferrite: 19 }, maxCarryingCapacityKg: 20,
+  }, cwd);
+  let keplerCalls = 0;
+  const server = createServer((_request, response) => {
+    keplerCalls += 1;
+    response.writeHead(409, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "Tile does not have enough remaining material." } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const app = createBackendApp({ cwd, apiToken: "test-token", keplerBaseUrl: `http://127.0.0.1:${address.port}` });
+    const tooMuch = await app.request("http://localhost/collection", {
+      method: "POST", body: JSON.stringify({ quantityKg: 2 }), headers: { "Content-Type": "application/json" },
+    });
+    assert.equal(tooMuch.status, 409);
+    assert.equal(keplerCalls, 0);
+    assert.deepEqual(readExplorationState(cwd).carriedResources, { ferrite: 19 });
+
+    const rejected = await app.request("http://localhost/collection", {
+      method: "POST", body: JSON.stringify({ quantityKg: 1 }), headers: { "Content-Type": "application/json" },
+    });
+    assert.equal(rejected.status, 409);
+    assert.equal(keplerCalls, 1);
+    assert.deepEqual(readExplorationState(cwd).carriedResources, { ferrite: 19 });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
