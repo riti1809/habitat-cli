@@ -3,8 +3,9 @@
     "target": "ESNext",
     "module": "Preserve",
     "moduleResolution": "bundler",
+    "jsx": "react-jsx",
     "resolveJsonModule": true,
-    "types": ["node"],
+    "types": ["node", "react", "react-dom"],
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true

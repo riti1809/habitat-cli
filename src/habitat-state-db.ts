@@ -52,6 +52,15 @@ export function ensureHabitatDatabaseSchema(database: Database) {
       updated_at TEXT NOT NULL,
       construction_job_json TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS exploration_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      deployed_human_id TEXT,
+      x INTEGER NOT NULL,
+      y INTEGER NOT NULL,
+      carried_resources_json TEXT NOT NULL,
+      max_carrying_capacity_kg REAL NOT NULL
+    );
   `);
 
   const columns = new Set(

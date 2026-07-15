@@ -3,6 +3,7 @@ import type { HabitatInventory } from "./habitat-inventory";
 import type { HabitatModule } from "./habitat-store";
 import type { StoredRegistration } from "./habitat-store";
 import type { StarterHuman } from "./habitat-store";
+import type { ExplorationState } from "./exploration";
 import { parseWorldScanResponse, type WorldScanResponse } from "./world-scan";
 
 type ModulesResponse = {
@@ -50,6 +51,32 @@ export async function moveHuman(humanId: string, moduleId: string) {
     },
   );
   return response.human;
+}
+
+export async function getExplorationState() {
+  const response = await requestJson<{ exploration: ExplorationState }>("/exploration");
+  return response.exploration;
+}
+
+export async function deployExplorer(humanId: string) {
+  const response = await requestJson<{ exploration: ExplorationState }>("/exploration/deploy", {
+    method: "POST", body: { humanId },
+  });
+  return response.exploration;
+}
+
+export async function moveExplorer(x: number, y: number) {
+  const response = await requestJson<{ exploration: ExplorationState }>("/exploration/move", {
+    method: "POST", body: { x, y },
+  });
+  return response.exploration;
+}
+
+export async function dockExplorer() {
+  const response = await requestJson<{ exploration: ExplorationState }>("/exploration/dock", {
+    method: "POST",
+  });
+  return response.exploration;
 }
 
 export async function getRegistration() {

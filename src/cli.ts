@@ -46,6 +46,10 @@ import {
   getRegistration as getRemoteRegistration,
   listHumans as listRemoteHumans,
   moveHuman as moveRemoteHuman,
+  getExplorationState,
+  deployExplorer,
+  moveExplorer,
+  dockExplorer,
   listModules as listRemoteModules,
   registerHabitat as registerRemoteHabitat,
   replaceModules as replaceRemoteModules,
@@ -56,6 +60,7 @@ import {
 } from "./local-api";
 import { formatWorldScan, formatWorldScanJson } from "./world-scan";
 import { formatHumanList } from "./humans";
+import { formatExplorationStatus } from "./exploration";
 
 type RegisterOptions = {
   name: string;
@@ -106,6 +111,8 @@ type ScanOptions = {
 type HumanListOptions = {
   json?: boolean;
 };
+
+type EvaOptions = { json?: boolean };
 
 type HabitatResponse = {
   habitat: HabitatStatus;
@@ -846,6 +853,9 @@ const moduleCommand = program
 const humanCommand = program
   .command("human")
   .description("List humans and their current habitat locations.");
+const evaCommand = program
+  .command("eva")
+  .description("Manage the local EVA exploration state.");
 const blueprintCommand = program
   .command("blueprint")
   .description("Inspect official Kepler blueprint catalog entries.");
@@ -891,6 +901,10 @@ Commands:
   habitat module update <id-or-alias> [--name <name>] [--status <status>] [--health <0-100>]
   habitat module delete <id-or-alias>
   habitat human list [--json]
+  habitat eva status [--json]
+  habitat eva deploy <human-id>
+  habitat eva move <x> <y>
+  habitat eva dock
   habitat blueprint list
   habitat blueprint show <blueprint-id>
   habitat resource list
@@ -934,6 +948,42 @@ humanCommand
       printError(error);
       process.exit(1);
     }
+  });
+
+evaCommand.command("status")
+  .description("Show explorer, position, and carried resources.")
+  .option("--json", "Print exploration state as JSON")
+  .action(async (options: EvaOptions) => {
+    try {
+      const state = await getExplorationState();
+      console.log(options.json ? JSON.stringify(state, null, 2) : formatExplorationStatus(state));
+    } catch (error) { printError(error); process.exit(1); }
+  });
+
+evaCommand.command("deploy")
+  .description("Deploy one human from the active suitport.")
+  .argument("<human-id>", "Human ID")
+  .action(async (humanId: string) => {
+    try { await deployExplorer(humanId); console.log(`Deployed human "${humanId}" at (0, 0).`); }
+    catch (error) { printError(error); process.exit(1); }
+  });
+
+evaCommand.command("move")
+  .description("Move the deployed explorer one adjacent tile.")
+  .argument("<x>", "Destination x coordinate")
+  .argument("<y>", "Destination y coordinate")
+  .action(async (x: string, y: string) => {
+    try {
+      const state = await moveExplorer(Number(x), Number(y));
+      console.log(`Explorer moved to (${state.x}, ${state.y}).`);
+    } catch (error) { printError(error); process.exit(1); }
+  });
+
+evaCommand.command("dock")
+  .description("Dock the deployed explorer at (0, 0).")
+  .action(async () => {
+    try { await dockExplorer(); console.log("Explorer docked at (0, 0)."); }
+    catch (error) { printError(error); process.exit(1); }
   });
 
 humanCommand
