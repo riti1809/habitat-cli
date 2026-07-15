@@ -31,7 +31,9 @@ export function ensureHabitatDatabaseSchema(database: Database) {
       base_url TEXT NOT NULL,
       registered_at TEXT NOT NULL,
       starter_modules_json TEXT NOT NULL,
+      starter_humans_json TEXT,
       blueprints_json TEXT NOT NULL,
+      contracts_json TEXT,
       last_status_json TEXT
     );
 
@@ -51,6 +53,19 @@ export function ensureHabitatDatabaseSchema(database: Database) {
       construction_job_json TEXT
     );
   `);
+
+  const columns = new Set(
+    (database.query("PRAGMA table_info(registration)").all() as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+
+  if (!columns.has("starter_humans_json")) {
+    database.exec("ALTER TABLE registration ADD COLUMN starter_humans_json TEXT");
+  }
+
+  if (!columns.has("contracts_json")) {
+    database.exec("ALTER TABLE registration ADD COLUMN contracts_json TEXT");
+  }
 }
 
 export function openHabitatDatabase(cwd = process.cwd()) {

@@ -7,6 +7,7 @@ import {
   deleteModule,
   getInventory,
   getModule,
+  listHumans,
   listModules,
   setInventory,
   updateModule,
@@ -221,4 +222,39 @@ test("local api client uses the backend routes", async () => {
     "GET /inventory",
     "PUT /inventory",
   ]);
+});
+
+test("local api client lists humans from the Habitat backend", async () => {
+  const requests: string[] = [];
+  const previousBaseUrl = process.env.HABITAT_API_BASE_URL;
+
+  await withServer((request, response) => {
+    requests.push(`${request.method ?? "GET"} ${request.url ?? ""}`);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      humans: [{
+        id: "human-1",
+        displayName: "Abigail",
+        locationModuleId: "command-1",
+      }],
+    }));
+  }, async (baseUrl) => {
+    process.env.HABITAT_API_BASE_URL = baseUrl;
+
+    try {
+      assert.deepEqual(await listHumans(), [{
+        id: "human-1",
+        displayName: "Abigail",
+        locationModuleId: "command-1",
+      }]);
+    } finally {
+      if (previousBaseUrl === undefined) {
+        delete process.env.HABITAT_API_BASE_URL;
+      } else {
+        process.env.HABITAT_API_BASE_URL = previousBaseUrl;
+      }
+    }
+  });
+
+  assert.deepEqual(requests, ["GET /humans"]);
 });

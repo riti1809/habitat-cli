@@ -2,6 +2,7 @@ import { requestJson } from "./api-client";
 import type { HabitatInventory } from "./habitat-inventory";
 import type { HabitatModule } from "./habitat-store";
 import type { StoredRegistration } from "./habitat-store";
+import type { StarterHuman } from "./habitat-store";
 import { parseWorldScanResponse, type WorldScanResponse } from "./world-scan";
 
 type ModulesResponse = {
@@ -24,9 +25,18 @@ type ModulesReplaceResponse = {
   modules: HabitatModule[];
 };
 
+type HumansResponse = {
+  humans: StarterHuman[];
+};
+
 export async function listModules() {
   const response = await requestJson<ModulesResponse>("/modules");
   return response.modules;
+}
+
+export async function listHumans() {
+  const response = await requestJson<HumansResponse>("/humans");
+  return response.humans;
 }
 
 export async function getRegistration() {

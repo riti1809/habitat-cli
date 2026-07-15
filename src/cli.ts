@@ -44,6 +44,7 @@ import {
   getInventory as getRemoteInventory,
   getModule as getRemoteModule,
   getRegistration as getRemoteRegistration,
+  listHumans as listRemoteHumans,
   listModules as listRemoteModules,
   registerHabitat as registerRemoteHabitat,
   replaceModules as replaceRemoteModules,
@@ -53,6 +54,7 @@ import {
   updateModule as updateRemoteModule,
 } from "./local-api";
 import { formatWorldScan, formatWorldScanJson } from "./world-scan";
+import { formatHumanList } from "./humans";
 
 type RegisterOptions = {
   name: string;
@@ -97,6 +99,10 @@ type ScanOptions = {
   y: string;
   strength: string;
   radius: string;
+  json?: boolean;
+};
+
+type HumanListOptions = {
   json?: boolean;
 };
 
@@ -836,6 +842,9 @@ const program = new Command();
 const moduleCommand = program
   .command("module")
   .description("Create, list, show, update, and delete local habitat modules.");
+const humanCommand = program
+  .command("human")
+  .description("List humans and their current habitat locations.");
 const blueprintCommand = program
   .command("blueprint")
   .description("Inspect official Kepler blueprint catalog entries.");
@@ -880,6 +889,7 @@ Commands:
   habitat module show <id-or-alias>
   habitat module update <id-or-alias> [--name <name>] [--status <status>] [--health <0-100>]
   habitat module delete <id-or-alias>
+  habitat human list [--json]
   habitat blueprint list
   habitat blueprint show <blueprint-id>
   habitat resource list
@@ -908,6 +918,22 @@ Examples:
   habitat module delete test-module-1
 `,
 );
+
+humanCommand
+  .command("list")
+  .description("List humans and their current module locations.")
+  .option("--json", "Print humans as JSON")
+  .action(async (options: HumanListOptions) => {
+    try {
+      const humans = await listRemoteHumans();
+      console.log(
+        options.json ? JSON.stringify(humans, null, 2) : formatHumanList(humans),
+      );
+    } catch (error) {
+      printError(error);
+      process.exit(1);
+    }
+  });
 
 blueprintCommand.addHelpText(
   "after",

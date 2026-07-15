@@ -16,6 +16,21 @@ export type StarterModuleInstance = {
   capabilities: string[];
 };
 
+export type StarterHuman = {
+  id: string;
+  displayName: string;
+  locationModuleId: string;
+};
+
+export type AlertContract = {
+  schemaVersion: string;
+  schema: Record<string, unknown>;
+};
+
+export type RegistrationContracts = {
+  alerts: AlertContract;
+};
+
 export type ProductionBlueprint = {
   id: string;
   blueprintId: string;
@@ -37,7 +52,9 @@ export type StoredRegistration = {
   baseUrl: string;
   registeredAt: string;
   starterModules: StarterModuleInstance[];
+  starterHumans?: StarterHuman[];
   blueprints: ProductionBlueprint[];
+  contracts?: RegistrationContracts;
   lastStatus?: HabitatStatus;
 };
 
@@ -85,7 +102,9 @@ type RegistrationRow = {
   base_url: string;
   registered_at: string;
   starter_modules_json: string;
+  starter_humans_json: string | null;
   blueprints_json: string;
+  contracts_json: string | null;
   last_status_json: string | null;
 };
 
@@ -130,6 +149,27 @@ function isStarterModuleInstance(value: unknown): value is StarterModuleInstance
   );
 }
 
+function isStarterHuman(value: unknown): value is StarterHuman {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.displayName === "string" &&
+    typeof value.locationModuleId === "string"
+  );
+}
+
+function isAlertContract(value: unknown): value is AlertContract {
+  return (
+    isRecord(value) &&
+    typeof value.schemaVersion === "string" &&
+    isRecord(value.schema)
+  );
+}
+
+function isRegistrationContracts(value: unknown): value is RegistrationContracts {
+  return isRecord(value) && isAlertContract(value.alerts);
+}
+
 function isProductionBlueprint(value: unknown): value is ProductionBlueprint {
   if (!isRecord(value)) {
     return false;
@@ -172,8 +212,11 @@ function isStoredRegistration(value: unknown): value is StoredRegistration {
     typeof value.registeredAt === "string" &&
     Array.isArray(value.starterModules) &&
     value.starterModules.every(isStarterModuleInstance) &&
+    (value.starterHumans === undefined ||
+      (Array.isArray(value.starterHumans) && value.starterHumans.every(isStarterHuman))) &&
     Array.isArray(value.blueprints) &&
     value.blueprints.every(isProductionBlueprint) &&
+    (value.contracts === undefined || isRegistrationContracts(value.contracts)) &&
     (value.lastStatus === undefined || isHabitatStatus(value.lastStatus))
   );
 }
@@ -337,7 +380,9 @@ function rowToStoredRegistration(row: RegistrationRow): StoredRegistration {
     baseUrl: row.base_url,
     registeredAt: row.registered_at,
     starterModules: parseJsonColumn(row.starter_modules_json, "starter_modules_json"),
+    starterHumans: parseJsonColumn(row.starter_humans_json, "starter_humans_json") ?? [],
     blueprints: parseJsonColumn(row.blueprints_json, "blueprints_json"),
+    contracts: parseJsonColumn(row.contracts_json, "contracts_json"),
     lastStatus: parseJsonColumn(row.last_status_json, "last_status_json"),
   };
 
@@ -419,7 +464,8 @@ export function readRegistration(cwd = process.cwd()): StoredRegistration | unde
     const row = database
       .query(
         `SELECT habitat_uuid, habitat_id, display_name, base_url, registered_at,
-                starter_modules_json, blueprints_json, last_status_json
+                starter_modules_json, starter_humans_json, blueprints_json,
+                contracts_json, last_status_json
            FROM registration
           LIMIT 1`,
       )
@@ -443,7 +489,11 @@ export function writeRegistration(registration: StoredRegistration, cwd = proces
       base_url: registration.baseUrl,
       registered_at: registration.registeredAt,
       starter_modules_json: JSON.stringify(registration.starterModules),
+      starter_humans_json: JSON.stringify(registration.starterHumans ?? []),
       blueprints_json: JSON.stringify(registration.blueprints),
+      contracts_json: registration.contracts
+        ? JSON.stringify(registration.contracts)
+        : null,
       last_status_json: registration.lastStatus
         ? JSON.stringify(registration.lastStatus)
         : null,
@@ -459,9 +509,11 @@ export function writeRegistration(registration: StoredRegistration, cwd = proces
           base_url,
           registered_at,
           starter_modules_json,
+          starter_humans_json,
           blueprints_json,
+          contracts_json,
           last_status_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           value.habitat_uuid,
           value.habitat_id,
@@ -469,7 +521,9 @@ export function writeRegistration(registration: StoredRegistration, cwd = proces
           value.base_url,
           value.registered_at,
           value.starter_modules_json,
+          value.starter_humans_json,
           value.blueprints_json,
+          value.contracts_json,
           value.last_status_json,
         ],
       );
@@ -565,6 +619,94 @@ export function writeModules(modules: HabitatModule[], cwd = process.cwd()) {
     });
 
     replaceModules(rows);
+  } finally {
+    database.close();
+  }
+}
+
+export function writeRegistrationAndModules(
+  registration: StoredRegistration,
+  modules: HabitatModule[],
+  cwd = process.cwd(),
+) {
+  maybeWarnLegacyJsonIgnored(cwd);
+  const database = openHabitatDatabase(cwd);
+
+  try {
+    const normalizedModules = normalizeModules(modules);
+
+    if (!normalizedModules) {
+      throw new Error(`Modules data is not valid: ${getStateDatabaseFilePath(cwd)}`);
+    }
+
+    const registrationRow: RegistrationRow = {
+      habitat_uuid: registration.habitatUuid,
+      habitat_id: registration.habitatId,
+      display_name: registration.displayName,
+      base_url: registration.baseUrl,
+      registered_at: registration.registeredAt,
+      starter_modules_json: JSON.stringify(registration.starterModules),
+      starter_humans_json: JSON.stringify(registration.starterHumans ?? []),
+      blueprints_json: JSON.stringify(registration.blueprints),
+      contracts_json: registration.contracts
+        ? JSON.stringify(registration.contracts)
+        : null,
+      last_status_json: registration.lastStatus
+        ? JSON.stringify(registration.lastStatus)
+        : null,
+    };
+    const moduleRows = normalizedModules.map(moduleToRow);
+
+    const replaceState = database.transaction(() => {
+      database.run("DELETE FROM registration");
+      database.run(
+        `INSERT INTO registration (
+          habitat_uuid, habitat_id, display_name, base_url, registered_at,
+          starter_modules_json, starter_humans_json, blueprints_json,
+          contracts_json, last_status_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          registrationRow.habitat_uuid,
+          registrationRow.habitat_id,
+          registrationRow.display_name,
+          registrationRow.base_url,
+          registrationRow.registered_at,
+          registrationRow.starter_modules_json,
+          registrationRow.starter_humans_json,
+          registrationRow.blueprints_json,
+          registrationRow.contracts_json,
+          registrationRow.last_status_json,
+        ],
+      );
+      database.run("DELETE FROM modules");
+
+      for (const row of moduleRows) {
+        database.run(
+          `INSERT INTO modules (
+            id, alias, blueprint_id, module_type, display_name, connected_to_json,
+            runtime_attributes_json, capabilities_json, construction_status, source,
+            created_at, updated_at, construction_job_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            row.id,
+            row.alias,
+            row.blueprint_id,
+            row.module_type,
+            row.display_name,
+            row.connected_to_json,
+            row.runtime_attributes_json,
+            row.capabilities_json,
+            row.construction_status,
+            row.source,
+            row.created_at,
+            row.updated_at,
+            row.construction_job_json,
+          ],
+        );
+      }
+    });
+
+    replaceState();
   } finally {
     database.close();
   }

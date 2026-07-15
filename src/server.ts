@@ -11,8 +11,10 @@ import {
   readRegistration,
   type HabitatModule,
   type StoredRegistration,
+  type RegistrationContracts,
+  type StarterHuman,
   writeModules,
-  writeRegistration,
+  writeRegistrationAndModules,
 } from "./habitat-store";
 import type { BlueprintDetail } from "./kepler-blueprints";
 import type { ResourceSummary } from "./kepler-resources";
@@ -22,6 +24,7 @@ import {
   writeSupplyCacheInventory,
 } from "./habitat-inventory";
 import type { SolarIrradiance } from "./kepler-solar";
+import { readHabitatHumans, type HabitatHuman } from "./humans";
 
 export type BackendRegistrationView = {
   habitatUuid: string;
@@ -30,7 +33,9 @@ export type BackendRegistrationView = {
   baseUrl: string;
   registeredAt: string;
   starterModules: StoredRegistration["starterModules"];
+  starterHumans: StarterHuman[];
   blueprints: StoredRegistration["blueprints"];
+  contracts?: RegistrationContracts;
   lastStatus?: StoredRegistration["lastStatus"];
   apiToken: string;
 };
@@ -41,6 +46,10 @@ export type BackendRegistrationResponse = {
 
 export type BackendModulesResponse = {
   modules: HabitatModule[];
+};
+
+export type BackendHumansResponse = {
+  humans: HabitatHuman[];
 };
 
 export type BackendModuleResponse = {
@@ -96,6 +105,30 @@ function getKeplerToken(options: BackendAppOptions) {
     process.env.KEPLER_PLANET_TOKEN ??
     process.env.KEPLER_WORLD_TOKEN ??
     process.env.PLANET_TOKEN
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isStarterHuman(value: unknown): value is StarterHuman {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.displayName === "string" &&
+    typeof value.locationModuleId === "string"
+  );
+}
+
+function isRegistrationContracts(value: unknown): value is RegistrationContracts {
+  if (!isRecord(value) || !isRecord(value.alerts)) {
+    return false;
+  }
+
+  return (
+    typeof value.alerts.schemaVersion === "string" &&
+    isRecord(value.alerts.schema)
   );
 }
 
@@ -245,7 +278,9 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     const registrationResponse = await requestJsonWithStatus<{
       habitatId: string;
       starterModules: StoredRegistration["starterModules"];
+      starterHumans: StarterHuman[];
       blueprints: StoredRegistration["blueprints"];
+      contracts: RegistrationContracts;
     }>("/habitats/register", {
       baseUrl: getKeplerBaseUrl(options),
       apiToken: getKeplerToken(options),
@@ -256,6 +291,17 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       },
     });
 
+    if (
+      !Array.isArray(registrationResponse.data.starterHumans) ||
+      !registrationResponse.data.starterHumans.every(isStarterHuman)
+    ) {
+      throw new Error("Kepler returned invalid starter human registration data.");
+    }
+
+    if (!isRegistrationContracts(registrationResponse.data.contracts)) {
+      throw new Error("Kepler returned an invalid registration contracts object.");
+    }
+
     const registration: StoredRegistration = {
       habitatUuid,
       habitatId: registrationResponse.data.habitatId,
@@ -263,11 +309,13 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       baseUrl: getKeplerBaseUrl(options),
       registeredAt: new Date().toISOString(),
       starterModules: registrationResponse.data.starterModules,
+      starterHumans: registrationResponse.data.starterHumans,
       blueprints: registrationResponse.data.blueprints,
+      contracts: registrationResponse.data.contracts,
     };
 
-    writeRegistration(registration, cwd);
-    writeModules(
+    writeRegistrationAndModules(
+      registration,
       hydrateModulesFromStarterModules(registration.starterModules, registration.registeredAt),
       cwd,
     );
@@ -277,6 +325,7 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       {
         registration: {
           ...registration,
+          starterHumans: registration.starterHumans ?? [],
           apiToken,
         },
       },
@@ -344,6 +393,7 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     const response = c.json<BackendRegistrationResponse>({
       registration: {
         ...registration,
+        starterHumans: registration.starterHumans ?? [],
         apiToken,
       },
     });
@@ -359,6 +409,12 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     const modules = readModules(options.cwd ?? process.cwd());
     logHabitatApi(c.req.method, "/modules", summarizeModules(modules));
     return c.json<BackendModulesResponse>({ modules });
+  });
+
+  app.get("/humans", (c) => {
+    const humans = readHabitatHumans(options.cwd ?? process.cwd());
+    logHabitatApi(c.req.method, "/humans", `${humans.length} humans`);
+    return c.json<BackendHumansResponse>({ humans });
   });
 
   app.get("/modules/:moduleId", (c) => {

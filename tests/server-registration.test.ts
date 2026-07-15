@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 
-import { writeRegistration, type StoredRegistration } from "../src/habitat-store.ts";
+import {
+  readRegistration,
+  readModules,
+  writeRegistration,
+  type StoredRegistration,
+} from "../src/habitat-store.ts";
 import { createBackendApp } from "../src/server.ts";
 
 function createTempHabitatDir() {
@@ -94,7 +99,14 @@ test("GET /registration returns the stored registration envelope", async () => {
     baseUrl: "https://planet.turingguild.com",
     registeredAt: "2026-07-10T00:00:00.000Z",
     starterModules: [],
+    starterHumans: [],
     blueprints: [],
+    contracts: {
+      alerts: {
+        schemaVersion: "1.0",
+        schema: {},
+      },
+    },
   };
 
   writeLocalRegistration(tempDir, registration);
@@ -111,9 +123,46 @@ test("GET /registration returns the stored registration envelope", async () => {
       registeredAt: "2026-07-10T00:00:00.000Z",
       baseUrl: "https://planet.turingguild.com",
       starterModules: [],
+      starterHumans: [],
       blueprints: [],
+      contracts: {
+        alerts: {
+          schemaVersion: "1.0",
+          schema: {},
+        },
+      },
       apiToken: "test-token",
     },
+  });
+});
+
+test("GET /humans returns humans persisted in registration state", async () => {
+  const tempDir = createTempHabitatDir();
+  const registration: StoredRegistration = {
+    habitatUuid: "uuid-123",
+    habitatId: "habitat-123",
+    displayName: "Habitat One",
+    baseUrl: "https://planet.turingguild.com",
+    registeredAt: "2026-07-10T00:00:00.000Z",
+    starterModules: [],
+    starterHumans: [
+      {
+        id: "human-1",
+        displayName: "Abigail",
+        locationModuleId: "command-1",
+      },
+    ],
+    blueprints: [],
+  };
+
+  writeLocalRegistration(tempDir, registration);
+
+  const app = createBackendApp({ cwd: tempDir, apiToken: "test-token" });
+  const response = await app.request("http://localhost/humans");
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    humans: registration.starterHumans,
   });
 });
 
@@ -135,7 +184,31 @@ test("POST /registration stores the registration and hydrates starter modules", 
               runtimeAttributes: {},
               capabilities: [],
             },
+            {
+              id: "suitport-1",
+              blueprintId: "basic-suitport",
+              displayName: "Basic Suitport",
+              connectedTo: [],
+              runtimeAttributes: {},
+              capabilities: ["limited-eva", "suitport-access"],
+            },
           ],
+          starterHumans: [
+            {
+              id: "human-1",
+              displayName: "Abigail",
+              locationModuleId: "command-1",
+            },
+          ],
+          contracts: {
+            alerts: {
+              schemaVersion: "1.0",
+              schema: {
+                type: "object",
+                required: ["id", "severity", "status"],
+              },
+            },
+          },
           blueprints: [],
         }),
       );
@@ -168,7 +241,18 @@ test("POST /registration stores the registration and hydrates starter modules", 
         registeredAt: string;
         baseUrl: string;
         starterModules: Array<{ id: string; blueprintId: string; displayName: string }>;
+        starterHumans: Array<{
+          id: string;
+          displayName: string;
+          locationModuleId: string;
+        }>;
         blueprints: unknown[];
+        contracts: {
+          alerts: {
+            schemaVersion: string;
+            schema: Record<string, unknown>;
+          };
+        };
         lastStatus?: unknown;
         apiToken: string;
       };
@@ -178,14 +262,102 @@ test("POST /registration stores the registration and hydrates starter modules", 
     assert.equal(responseBody.registration.displayName, "Habitat One");
     assert.equal(responseBody.registration.baseUrl, baseUrl);
     assert.equal(responseBody.registration.apiToken, "test-token");
-    assert.equal(responseBody.registration.starterModules.length, 1);
+    assert.equal(responseBody.registration.starterModules.length, 2);
     assert.equal(responseBody.registration.starterModules[0].id, "command-1");
+    assert.deepEqual(responseBody.registration.starterHumans, [
+      {
+        id: "human-1",
+        displayName: "Abigail",
+        locationModuleId: "command-1",
+      },
+    ]);
+    assert.deepEqual(responseBody.registration.contracts.alerts, {
+      schemaVersion: "1.0",
+      schema: {
+        type: "object",
+        required: ["id", "severity", "status"],
+      },
+    });
     assert.equal(typeof responseBody.registration.habitatUuid, "string");
     assert.equal(typeof responseBody.registration.registeredAt, "string");
 
+    const storedRegistration = readRegistration(tempDir);
+    assert.deepEqual(storedRegistration?.starterHumans, [
+      {
+        id: "human-1",
+        displayName: "Abigail",
+        locationModuleId: "command-1",
+      },
+    ]);
+    assert.deepEqual(storedRegistration?.contracts?.alerts, {
+      schemaVersion: "1.0",
+      schema: {
+        type: "object",
+        required: ["id", "severity", "status"],
+      },
+    });
+
     const modulesResponse = await app.request("http://localhost/modules");
     assert.equal(modulesResponse.status, 200);
-    assert.equal((await modulesResponse.json()).modules.length, 1);
+    const modules = readModules(tempDir);
+    assert.equal((await modulesResponse.json()).modules.length, 2);
+    const suitport = modules.find(
+      (module) => module.capabilities.includes("suitport-access"),
+    );
+    assert.ok(suitport);
+    assert.equal(suitport.blueprintId, "basic-suitport");
+    assert.deepEqual(suitport.capabilities, ["limited-eva", "suitport-access"]);
+    assert.equal(suitport.source, "kepler-registration");
+  });
+});
+
+test("POST /registration rejects starter humans without a module location", async () => {
+  const tempDir = createTempHabitatDir();
+
+  await withServer((request, response) => {
+    if (request.method === "POST" && request.url === "/habitats/register") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          habitatId: "habitat-123",
+          starterModules: [],
+          starterHumans: [
+            {
+              id: "human-1",
+              displayName: "Abigail",
+            },
+          ],
+          contracts: {
+            alerts: {
+              schemaVersion: "1.0",
+              schema: {},
+            },
+          },
+          blueprints: [],
+        }),
+      );
+      return;
+    }
+
+    response.writeHead(404, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "Route not mocked" } }));
+  }, async (baseUrl) => {
+    const app = createBackendApp({
+      cwd: tempDir,
+      apiToken: "test-token",
+      keplerBaseUrl: baseUrl,
+    });
+
+    const response = await app.request("http://localhost/registration", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "Habitat One" }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    assert.equal(response.status, 500);
+    assert.match(await response.text(), /Internal Server Error/);
   });
 });
 
@@ -209,7 +381,14 @@ test("DELETE /registration clears stored state", async () => {
       baseUrl,
       registeredAt: "2026-07-10T00:00:00.000Z",
       starterModules: [],
+      starterHumans: [],
       blueprints: [],
+      contracts: {
+        alerts: {
+          schemaVersion: "1.0",
+          schema: {},
+        },
+      },
     };
 
     writeLocalRegistration(tempDir, registration);
