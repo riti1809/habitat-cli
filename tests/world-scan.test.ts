@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import { createBackendApp } from "../src/server.ts";
 import { scanWorld } from "../src/local-api.ts";
+import { writeExplorationState } from "../src/exploration.ts";
 import { writeRegistration, type StoredRegistration } from "../src/habitat-store.ts";
 import { formatWorldScan, formatWorldScanJson } from "../src/world-scan.ts";
 
@@ -54,6 +55,13 @@ function writeLocalRegistration(cwd: string) {
   };
 
   writeRegistration(registration, cwd);
+  writeExplorationState({
+    deployedHumanId: "human-1",
+    x: 3,
+    y: -2,
+    carriedResources: {},
+    maxCarryingCapacityKg: 20,
+  }, cwd);
 }
 
 test("world scan proxies the saved habitat ID and returns Kepler data", async () => {
@@ -83,7 +91,7 @@ test("world scan proxies the saved habitat ID and returns Kepler data", async ()
     });
 
     const response = await app.request(
-      "http://localhost/world/scan?x=3&y=-2&sensorStrength=60&radiusTiles=0",
+      "http://localhost/world/scan?sensorStrength=60&radiusTiles=0",
     );
 
     assert.equal(response.status, 200);
@@ -120,12 +128,45 @@ test("world scan rejects invalid scan parameters before calling Kepler", async (
     });
 
     const response = await app.request(
-      "http://localhost/world/scan?x=3&y=-2&sensorStrength=101&radiusTiles=0",
+      "http://localhost/world/scan?sensorStrength=101&radiusTiles=0",
     );
 
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), {
       error: { message: "sensorStrength must be an integer from 0 to 100." },
+    });
+  });
+
+  assert.equal(keplerCalls, 0);
+});
+
+test("world scan rejects when no human is deployed", async () => {
+  const tempDir = createTempHabitatDir();
+  writeRegistration({
+    habitatUuid: "uuid-123",
+    habitatId: "habitat-123",
+    displayName: "Habitat One",
+    baseUrl: "https://planet.turingguild.com",
+    registeredAt: "2026-07-10T00:00:00.000Z",
+    starterModules: [],
+    blueprints: [],
+  }, tempDir);
+
+  let keplerCalls = 0;
+  await withKeplerServer((_request, response) => {
+    keplerCalls += 1;
+    response.writeHead(500);
+    response.end();
+  }, async (keplerBaseUrl) => {
+    const response = await createBackendApp({
+      cwd: tempDir,
+      apiToken: "test-token",
+      keplerBaseUrl,
+    }).request("http://localhost/world/scan?sensorStrength=100&radiusTiles=0");
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: { message: "No human is deployed. Deploy a human before scanning." },
     });
   });
 
@@ -165,7 +206,7 @@ test("local scan client calls the local Habitat API", async () => {
   process.env.HABITAT_API_BASE_URL = `http://127.0.0.1:${address.port}`;
 
   try {
-    assert.deepEqual(await scanWorld(3, -2, 60, 0), {
+    assert.deepEqual(await scanWorld(60, 0), {
       scan: {
         modelVersion: "resource-probability-v2",
         origin: { x: 3, y: -2 },
@@ -186,7 +227,7 @@ test("local scan client calls the local Habitat API", async () => {
   }
 
   assert.deepEqual(requests, [
-    "/world/scan?x=3&y=-2&sensorStrength=60&radiusTiles=0",
+    "/world/scan?sensorStrength=60&radiusTiles=0",
   ]);
 });
 
@@ -212,7 +253,7 @@ test("local scan client rejects malformed responses", async () => {
 
   try {
     await assert.rejects(
-      scanWorld(3, -2, 60, 0),
+      scanWorld(60, 0),
       /Kepler returned an unexpected world scan response\./,
     );
   } finally {

@@ -829,20 +829,17 @@ export function createBackendApp(options: BackendAppOptions = {}) {
   app.get("/world/scan", async (c) => {
     const query = c.req.query();
     const registration = readRegistration(options.cwd ?? process.cwd());
+    const exploration = readExplorationState(options.cwd ?? process.cwd());
 
     if (!registration) {
       logHabitatApi(c.req.method, "/world/scan", "not registered");
       return jsonError("No local registration found.", 404);
     }
 
-    let x: number;
-    let y: number;
     let sensorStrength: number;
     let radiusTiles: number;
 
     try {
-      x = parseScanInteger(query.x, "x");
-      y = parseScanInteger(query.y, "y");
       sensorStrength = parseScanInteger(
         query.sensorStrength,
         "sensorStrength",
@@ -856,10 +853,15 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       return jsonError(message);
     }
 
+    if (!exploration.deployedHumanId) {
+      logHabitatApi(c.req.method, "/world/scan", "no explorer deployed");
+      return jsonError("No human is deployed. Deploy a human before scanning.", 409);
+    }
+
     const keplerQuery = new URLSearchParams({
       habitatId: registration.habitatId,
-      x: String(x),
-      y: String(y),
+      x: String(exploration.x),
+      y: String(exploration.y),
       sensorStrength: String(sensorStrength),
       radiusTiles: String(radiusTiles),
     });

@@ -101,8 +101,6 @@ type InventoryAddOptions = {
 };
 
 type ScanOptions = {
-  x: string;
-  y: string;
   strength: string;
   radius: string;
   json?: boolean;
@@ -647,11 +645,9 @@ async function runTickCommand(ticksInput: string) {
 }
 
 async function runScanCommand(options: ScanOptions) {
-  const x = parseScanInteger(options.x, "x");
-  const y = parseScanInteger(options.y, "y");
   const strength = parseScanInteger(options.strength, "strength", 0, 100);
   const radius = parseScanInteger(options.radius, "radius", 0, 5);
-  const response = await scanWorld(x, y, strength, radius);
+  const response = await scanWorld(strength, radius);
 
   if (options.json) {
     console.log(formatWorldScanJson(response));
@@ -1257,8 +1253,6 @@ program
 program
   .command("scan")
   .description("Scan nearby world tiles for estimated resources.")
-  .requiredOption("--x <integer>", "Current x coordinate")
-  .requiredOption("--y <integer>", "Current y coordinate")
   .requiredOption("--strength <0-100>", "Effective sensor strength")
   .option("--radius <0-5>", "Scan radius, default 0", "0")
   .option("--json", "Print the complete JSON response")

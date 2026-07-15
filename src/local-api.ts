@@ -168,14 +168,10 @@ export async function setInventory(inventory: HabitatInventory) {
 }
 
 export async function scanWorld(
-  x: number,
-  y: number,
   sensorStrength: number,
   radiusTiles = 0,
 ) {
   const query = new URLSearchParams({
-    x: String(x),
-    y: String(y),
     sensorStrength: String(sensorStrength),
     radiusTiles: String(radiusTiles),
   });
