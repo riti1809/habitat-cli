@@ -9,16 +9,27 @@
   "scripts": {
     "start": "node scripts/run-bun-command.mjs run src/cli.ts",
     "server": "node scripts/run-habitat-server.mjs",
+    "dev": "vite",
+    "dev:web": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "check": "tsc --noEmit",
     "test": "node scripts/run-bun-test.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.10",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
     "tsx": "^4.23.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^8.1.4"
   },
   "dependencies": {
     "commander": "^14.0.0",
-    "hono": "^4.12.29"
+    "hono": "^4.12.29",
+    "lucide-react": "^1.24.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   }
 }
