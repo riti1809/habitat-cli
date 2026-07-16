@@ -1,6 +1,6 @@
 import { openHabitatDatabase } from "./habitat-state-db";
 import { readModules, readRegistration, type HabitatModule } from "./habitat-store";
-import { observeAlert } from "./alerts";
+import { observeAlert, resolveAlert } from "./alerts";
 
 export const EXPLORATION_BOUNDS = {
   minX: -25,
@@ -191,6 +191,8 @@ export function dockExplorer(cwd = process.cwd()) {
       );
     });
     transaction();
+    resolveAlert("explorer-deployed", cwd);
+    resolveAlert("explorer-capacity-reached", cwd);
   } finally {
     database.close();
   }
