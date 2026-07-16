@@ -10,9 +10,11 @@ import {
   hydrateModulesFromStarterModules,
   readModules,
   readRegistration,
+  writeRegistration,
   type HabitatModule,
   type StoredRegistration,
   type RegistrationContracts,
+  type StreamRegistrationMetadata,
   type StarterHuman,
   writeModules,
   writeRegistrationAndModules,
@@ -64,6 +66,9 @@ export type BackendRegistrationView = {
   blueprints: StoredRegistration["blueprints"];
   contracts?: RegistrationContracts;
   lastStatus?: StoredRegistration["lastStatus"];
+  streamUrl?: string;
+  apiToken?: string;
+  stream?: StreamRegistrationMetadata;
 };
 
 export type BackendRegistrationResponse = {
@@ -169,6 +174,22 @@ function isRegistrationContracts(value: unknown): value is RegistrationContracts
   return (
     typeof value.alerts.schemaVersion === "string" &&
     isRecord(value.alerts.schema)
+  );
+}
+
+function isStreamRegistrationMetadata(value: unknown): value is StreamRegistrationMetadata {
+  return (
+    isRecord(value) &&
+    typeof value.protocolVersion === "string" &&
+    Array.isArray(value.subscriptions) &&
+    value.subscriptions.every((item) => typeof item === "string") &&
+    Number.isInteger(value.currentTick) &&
+    (value.currentTick as number) >= 0 &&
+    Number.isInteger(value.tickIntervalMs) &&
+    (value.tickIntervalMs as number) >= 0 &&
+    Number.isInteger(value.ticksPerPulse) &&
+    (value.ticksPerPulse as number) > 0 &&
+    typeof value.status === "string"
   );
 }
 
@@ -340,7 +361,7 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     const cwd = options.cwd ?? process.cwd();
     const existingRegistration = readRegistration(cwd);
 
-    if (existingRegistration) {
+    if (existingRegistration && existingRegistration.apiToken?.trim()) {
       logHabitatApi(
         c.req.method,
         "/registration",
@@ -361,9 +382,13 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       );
     }
 
-    const habitatUuid = randomUUID();
+    const habitatUuid = existingRegistration?.habitatUuid ?? randomUUID();
+    const registrationDisplayName = existingRegistration?.displayName ?? displayName;
     const registrationResponse = await requestJsonWithStatus<{
       habitatId: string;
+      streamUrl: string;
+      apiToken: string;
+      stream: StreamRegistrationMetadata;
       starterModules: StoredRegistration["starterModules"];
       starterHumans: StarterHuman[];
       blueprints: StoredRegistration["blueprints"];
@@ -373,10 +398,18 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       apiToken: getKeplerToken(options),
       method: "POST",
       body: {
-        displayName,
+        displayName: registrationDisplayName,
         habitatUuid,
       },
     });
+
+    if (
+      typeof registrationResponse.data.streamUrl !== "string" ||
+      typeof registrationResponse.data.apiToken !== "string" ||
+      !isStreamRegistrationMetadata(registrationResponse.data.stream)
+    ) {
+      throw new Error("Kepler returned invalid stream registration data.");
+    }
 
     if (
       !Array.isArray(registrationResponse.data.starterHumans) ||
@@ -392,22 +425,29 @@ export function createBackendApp(options: BackendAppOptions = {}) {
     const registration: StoredRegistration = {
       habitatUuid,
       habitatId: registrationResponse.data.habitatId,
-      displayName,
-      baseUrl: getKeplerBaseUrl(options),
-      registeredAt: new Date().toISOString(),
+      displayName: registrationDisplayName,
+      baseUrl: existingRegistration?.baseUrl ?? getKeplerBaseUrl(options),
+      registeredAt: existingRegistration?.registeredAt ?? new Date().toISOString(),
+      streamUrl: registrationResponse.data.streamUrl,
+      apiToken: registrationResponse.data.apiToken,
+      stream: registrationResponse.data.stream,
       starterModules: registrationResponse.data.starterModules,
       starterHumans: registrationResponse.data.starterHumans,
       blueprints: registrationResponse.data.blueprints,
       contracts: registrationResponse.data.contracts,
     };
 
-    writeRegistrationAndModules(
-      registration,
-      hydrateModulesFromStarterModules(registration.starterModules, registration.registeredAt),
-      cwd,
-    );
+    if (existingRegistration) {
+      writeRegistration(registration, cwd);
+    } else {
+      writeRegistrationAndModules(
+        registration,
+        hydrateModulesFromStarterModules(registration.starterModules, registration.registeredAt),
+        cwd,
+      );
+    }
 
-    logHabitatApi(c.req.method, "/registration", `registered habitat "${displayName}"`);
+    logHabitatApi(c.req.method, "/registration", `registered habitat "${registrationDisplayName}"`);
     return c.json<BackendRegistrationResponse>(
       {
         registration: {

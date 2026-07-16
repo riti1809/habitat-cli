@@ -9,6 +9,7 @@ import {
   readRegistration,
   readModules,
   writeRegistration,
+  writeModules,
   type StoredRegistration,
 } from "../src/habitat-store.ts";
 import { createBackendApp } from "../src/server.ts";
@@ -174,6 +175,16 @@ test("POST /registration stores the registration and hydrates starter modules", 
       response.end(
         JSON.stringify({
           habitatId: "habitat-123",
+          streamUrl: "wss://planet.example/planet/stream",
+          apiToken: "stream-token-123",
+          stream: {
+            protocolVersion: "1.0",
+            subscriptions: ["ticks"],
+            currentTick: 42,
+            tickIntervalMs: 1000,
+            ticksPerPulse: 5,
+            status: "running",
+          },
           starterModules: [
             {
               id: "command-1",
@@ -239,6 +250,16 @@ test("POST /registration stores the registration and hydrates starter modules", 
         displayName: string;
         registeredAt: string;
         baseUrl: string;
+        streamUrl: string;
+        apiToken: string;
+        stream: {
+          protocolVersion: string;
+          subscriptions: string[];
+          currentTick: number;
+          tickIntervalMs: number;
+          ticksPerPulse: number;
+          status: string;
+        };
         starterModules: Array<{ id: string; blueprintId: string; displayName: string }>;
         starterHumans: Array<{
           id: string;
@@ -259,7 +280,16 @@ test("POST /registration stores the registration and hydrates starter modules", 
     assert.equal(responseBody.registration.habitatId, "habitat-123");
     assert.equal(responseBody.registration.displayName, "Habitat One");
     assert.equal(responseBody.registration.baseUrl, baseUrl);
-    assert.equal("apiToken" in responseBody.registration, false);
+    assert.equal(responseBody.registration.streamUrl, "wss://planet.example/planet/stream");
+    assert.equal(responseBody.registration.apiToken, "stream-token-123");
+    assert.deepEqual(responseBody.registration.stream, {
+      protocolVersion: "1.0",
+      subscriptions: ["ticks"],
+      currentTick: 42,
+      tickIntervalMs: 1000,
+      ticksPerPulse: 5,
+      status: "running",
+    });
     assert.equal(responseBody.registration.starterModules.length, 2);
     assert.equal(responseBody.registration.starterModules[0].id, "command-1");
     assert.deepEqual(responseBody.registration.starterHumans, [
@@ -294,6 +324,16 @@ test("POST /registration stores the registration and hydrates starter modules", 
         required: ["id", "severity", "status"],
       },
     });
+    assert.equal(storedRegistration?.streamUrl, "wss://planet.example/planet/stream");
+    assert.equal(storedRegistration?.apiToken, "stream-token-123");
+    assert.deepEqual(storedRegistration?.stream, {
+      protocolVersion: "1.0",
+      subscriptions: ["ticks"],
+      currentTick: 42,
+      tickIntervalMs: 1000,
+      ticksPerPulse: 5,
+      status: "running",
+    });
 
     const modulesResponse = await app.request("http://localhost/modules");
     assert.equal(modulesResponse.status, 200);
@@ -309,6 +349,95 @@ test("POST /registration stores the registration and hydrates starter modules", 
   });
 });
 
+test("POST /registration upgrades a legacy registration without replacing local modules", async () => {
+  const tempDir = createTempHabitatDir();
+  const legacyRegistration: StoredRegistration = {
+    habitatUuid: "legacy-uuid",
+    habitatId: "legacy-habitat",
+    displayName: "Stored Legacy Habitat",
+    baseUrl: "https://old.example",
+    registeredAt: "2026-07-10T00:00:00.000Z",
+    starterModules: [],
+    starterHumans: [],
+    blueprints: [],
+  };
+  const existingModule = {
+    id: "local-module-1",
+    alias: "local-module-1",
+    blueprintId: "command-module",
+    moduleType: "command-module",
+    displayName: "Existing Command",
+    connectedTo: [],
+    runtimeAttributes: { status: "active" },
+    capabilities: ["habitat-command"],
+    constructionStatus: "built" as const,
+    source: "local" as const,
+    createdAt: "2026-07-10T00:00:00.000Z",
+    updatedAt: "2026-07-10T00:00:00.000Z",
+  };
+
+  writeLocalRegistration(tempDir, legacyRegistration);
+  writeModules([existingModule], tempDir);
+
+  let requestBody: Record<string, unknown> | undefined;
+  await withServer((request, response) => {
+    if (request.method === "POST" && request.url === "/habitats/register") {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        requestBody = JSON.parse(body) as Record<string, unknown>;
+        response.writeHead(201, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({
+          habitatId: "legacy-habitat",
+          streamUrl: "wss://planet.example/planet/stream",
+          apiToken: "upgraded-stream-token",
+          stream: {
+            protocolVersion: "1.0",
+            subscriptions: ["ticks"],
+            currentTick: 7,
+            tickIntervalMs: 2000,
+            ticksPerPulse: 3,
+            status: "paused",
+          },
+          starterModules: [],
+          starterHumans: [],
+          blueprints: [],
+          contracts: {
+            alerts: { schemaVersion: "1.0", schema: {} },
+          },
+        }));
+      });
+      return;
+    }
+
+    response.writeHead(404, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "Route not mocked" } }));
+  }, async (baseUrl) => {
+    const app = createBackendApp({
+      cwd: tempDir,
+      apiToken: "environment-token",
+      keplerBaseUrl: baseUrl,
+    });
+
+    const response = await app.request("http://localhost/registration", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "Wrong Incoming Name" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    assert.equal(response.status, 201);
+  });
+
+  assert.deepEqual(requestBody, {
+    displayName: "Stored Legacy Habitat",
+    habitatUuid: "legacy-uuid",
+  });
+  assert.deepEqual(readModules(tempDir), [{ ...existingModule, constructionJob: undefined }]);
+  assert.equal(readRegistration(tempDir)?.apiToken, "upgraded-stream-token");
+});
+
 test("POST /registration rejects starter humans without a module location", async () => {
   const tempDir = createTempHabitatDir();
 
@@ -318,6 +447,16 @@ test("POST /registration rejects starter humans without a module location", asyn
       response.end(
         JSON.stringify({
           habitatId: "habitat-123",
+          streamUrl: "wss://planet.example/planet/stream",
+          apiToken: "stream-token-123",
+          stream: {
+            protocolVersion: "1.0",
+            subscriptions: ["ticks"],
+            currentTick: 0,
+            tickIntervalMs: 1000,
+            ticksPerPulse: 1,
+            status: "paused",
+          },
           starterModules: [],
           starterHumans: [
             {

@@ -34,7 +34,10 @@ export function ensureHabitatDatabaseSchema(database: Database) {
       starter_humans_json TEXT,
       blueprints_json TEXT NOT NULL,
       contracts_json TEXT,
-      last_status_json TEXT
+      last_status_json TEXT,
+      stream_url TEXT,
+      api_token TEXT,
+      stream_json TEXT
     );
 
     CREATE TABLE IF NOT EXISTS modules (
@@ -83,6 +86,18 @@ export function ensureHabitatDatabaseSchema(database: Database) {
 
   if (!columns.has("contracts_json")) {
     database.exec("ALTER TABLE registration ADD COLUMN contracts_json TEXT");
+  }
+
+  if (!columns.has("stream_url")) {
+    database.exec("ALTER TABLE registration ADD COLUMN stream_url TEXT");
+  }
+
+  if (!columns.has("api_token")) {
+    database.exec("ALTER TABLE registration ADD COLUMN api_token TEXT");
+  }
+
+  if (!columns.has("stream_json")) {
+    database.exec("ALTER TABLE registration ADD COLUMN stream_json TEXT");
   }
 }
 

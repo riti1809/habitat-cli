@@ -37,7 +37,10 @@ import {
 import { listResources, type ResourceSummary } from "./kepler-resources";
 import { getSolarIrradiance } from "./kepler-solar";
 import { requestJson, type JsonRequestOptions } from "./api-client";
-import { resolveRegisteredAt } from "./registration-summary";
+import {
+  formatStreamRegistrationStatus,
+  resolveRegisteredAt,
+} from "./registration-summary";
 import {
   createModule as createRemoteModule,
   deleteModule as deleteRemoteModule,
@@ -433,6 +436,9 @@ async function printStatus(status: HabitatStatus, registration: StoredRegistrati
   console.log(`Catalog version: ${status.catalogVersion}`);
   console.log(`Last seen: ${status.lastSeenAt ?? "never"}`);
   console.log(`Registered at: ${resolveRegisteredAt(registration, localRegistration)}`);
+  for (const line of formatStreamRegistrationStatus(registration)) {
+    console.log(line);
+  }
 }
 
 function getModuleStatus(module: HabitatModule) {

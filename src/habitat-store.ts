@@ -31,6 +31,15 @@ export type RegistrationContracts = {
   alerts: AlertContract;
 };
 
+export type StreamRegistrationMetadata = {
+  protocolVersion: string;
+  subscriptions: string[];
+  currentTick: number;
+  tickIntervalMs: number;
+  ticksPerPulse: number;
+  status: string;
+};
+
 export type ProductionBlueprint = {
   id: string;
   blueprintId: string;
@@ -56,6 +65,9 @@ export type StoredRegistration = {
   blueprints: ProductionBlueprint[];
   contracts?: RegistrationContracts;
   lastStatus?: HabitatStatus;
+  streamUrl?: string;
+  apiToken?: string;
+  stream?: StreamRegistrationMetadata;
 };
 
 export type HabitatModule = {
@@ -106,6 +118,9 @@ type RegistrationRow = {
   blueprints_json: string;
   contracts_json: string | null;
   last_status_json: string | null;
+  stream_url: string | null;
+  api_token: string | null;
+  stream_json: string | null;
 };
 
 type ModuleRow = {
@@ -170,6 +185,21 @@ function isRegistrationContracts(value: unknown): value is RegistrationContracts
   return isRecord(value) && isAlertContract(value.alerts);
 }
 
+function isStreamRegistrationMetadata(value: unknown): value is StreamRegistrationMetadata {
+  return (
+    isRecord(value) &&
+    typeof value.protocolVersion === "string" &&
+    isStringArray(value.subscriptions) &&
+    Number.isInteger(value.currentTick) &&
+    (value.currentTick as number) >= 0 &&
+    Number.isInteger(value.tickIntervalMs) &&
+    (value.tickIntervalMs as number) >= 0 &&
+    Number.isInteger(value.ticksPerPulse) &&
+    (value.ticksPerPulse as number) > 0 &&
+    typeof value.status === "string"
+  );
+}
+
 function isProductionBlueprint(value: unknown): value is ProductionBlueprint {
   if (!isRecord(value)) {
     return false;
@@ -217,7 +247,10 @@ function isStoredRegistration(value: unknown): value is StoredRegistration {
     Array.isArray(value.blueprints) &&
     value.blueprints.every(isProductionBlueprint) &&
     (value.contracts === undefined || isRegistrationContracts(value.contracts)) &&
-    (value.lastStatus === undefined || isHabitatStatus(value.lastStatus))
+    (value.lastStatus === undefined || isHabitatStatus(value.lastStatus)) &&
+    (value.streamUrl === undefined || typeof value.streamUrl === "string") &&
+    (value.apiToken === undefined || typeof value.apiToken === "string") &&
+    (value.stream === undefined || isStreamRegistrationMetadata(value.stream))
   );
 }
 
@@ -384,6 +417,9 @@ function rowToStoredRegistration(row: RegistrationRow): StoredRegistration {
     blueprints: parseJsonColumn(row.blueprints_json, "blueprints_json"),
     contracts: parseJsonColumn(row.contracts_json, "contracts_json"),
     lastStatus: parseJsonColumn(row.last_status_json, "last_status_json"),
+    streamUrl: row.stream_url ?? undefined,
+    apiToken: row.api_token ?? undefined,
+    stream: parseJsonColumn(row.stream_json, "stream_json"),
   };
 
   if (!isStoredRegistration(parsed)) {
@@ -465,7 +501,7 @@ export function readRegistration(cwd = process.cwd()): StoredRegistration | unde
       .query(
         `SELECT habitat_uuid, habitat_id, display_name, base_url, registered_at,
                 starter_modules_json, starter_humans_json, blueprints_json,
-                contracts_json, last_status_json
+                contracts_json, last_status_json, stream_url, api_token, stream_json
            FROM registration
           LIMIT 1`,
       )
@@ -497,6 +533,9 @@ export function writeRegistration(registration: StoredRegistration, cwd = proces
       last_status_json: registration.lastStatus
         ? JSON.stringify(registration.lastStatus)
         : null,
+      stream_url: registration.streamUrl ?? null,
+      api_token: registration.apiToken ?? null,
+      stream_json: registration.stream ? JSON.stringify(registration.stream) : null,
     };
 
     const replaceRegistration = database.transaction((value: RegistrationRow) => {
@@ -512,8 +551,11 @@ export function writeRegistration(registration: StoredRegistration, cwd = proces
           starter_humans_json,
           blueprints_json,
           contracts_json,
-          last_status_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          last_status_json,
+          stream_url,
+          api_token,
+          stream_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           value.habitat_uuid,
           value.habitat_id,
@@ -525,6 +567,9 @@ export function writeRegistration(registration: StoredRegistration, cwd = proces
           value.blueprints_json,
           value.contracts_json,
           value.last_status_json,
+          value.stream_url,
+          value.api_token,
+          value.stream_json,
         ],
       );
     });
@@ -654,6 +699,9 @@ export function writeRegistrationAndModules(
       last_status_json: registration.lastStatus
         ? JSON.stringify(registration.lastStatus)
         : null,
+      stream_url: registration.streamUrl ?? null,
+      api_token: registration.apiToken ?? null,
+      stream_json: registration.stream ? JSON.stringify(registration.stream) : null,
     };
     const moduleRows = normalizedModules.map(moduleToRow);
 
@@ -663,8 +711,8 @@ export function writeRegistrationAndModules(
         `INSERT INTO registration (
           habitat_uuid, habitat_id, display_name, base_url, registered_at,
           starter_modules_json, starter_humans_json, blueprints_json,
-          contracts_json, last_status_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          contracts_json, last_status_json, stream_url, api_token, stream_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           registrationRow.habitat_uuid,
           registrationRow.habitat_id,
@@ -676,6 +724,9 @@ export function writeRegistrationAndModules(
           registrationRow.blueprints_json,
           registrationRow.contracts_json,
           registrationRow.last_status_json,
+          registrationRow.stream_url,
+          registrationRow.api_token,
+          registrationRow.stream_json,
         ],
       );
       database.run("DELETE FROM modules");
