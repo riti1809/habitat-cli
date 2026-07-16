@@ -6,6 +6,7 @@ import type { StarterHuman } from "./habitat-store";
 import { parseWorldScanResponse, type WorldScanResponse } from "./world-scan";
 import type { ExplorationState } from "./exploration";
 import type { WorldCollection } from "./collection";
+import type { HabitatAlert } from "./alerts";
 
 type ModulesResponse = {
   modules: HabitatModule[];
@@ -85,6 +86,14 @@ export async function collectResource(quantityKg: number) {
     method: "POST",
     body: { quantityKg },
   });
+}
+
+export async function listAlerts() {
+  return (await requestJson<{ alerts: HabitatAlert[] }>("/alerts")).alerts;
+}
+
+export async function acknowledgeAlert(alertId: string) {
+  return (await requestJson<{ alert: HabitatAlert }>(`/alerts/${encodeURIComponent(alertId)}/acknowledge`, { method: "POST" })).alert;
 }
 
 export async function getRegistration() {

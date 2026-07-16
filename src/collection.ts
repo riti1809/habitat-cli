@@ -5,6 +5,7 @@ import {
   type ExplorationState,
 } from "./exploration";
 import { readRegistration } from "./habitat-store";
+import { observeAlert } from "./alerts";
 
 export type WorldCollection = {
   x: number;
@@ -62,6 +63,9 @@ export function persistCollection(
     },
   };
   writeExplorationState(next, cwd);
+  if (Object.values(next.carriedResources).reduce((total, quantity) => total + quantity, 0) >= next.maxCarryingCapacityKg) {
+    observeAlert("explorer-capacity-reached", { message: "Carried material has reached explorer capacity.", severity: "warning", source: "habitat.collection", subject: { humanId: next.deployedHumanId ?? undefined } }, cwd);
+  }
   return next;
 }
 

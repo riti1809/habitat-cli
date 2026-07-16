@@ -61,6 +61,15 @@ export function ensureHabitatDatabaseSchema(database: Database) {
       carried_resources_json TEXT NOT NULL,
       max_carrying_capacity_kg REAL NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS alerts (
+      id TEXT PRIMARY KEY,
+      condition_key TEXT NOT NULL UNIQUE,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      last_observed_at TEXT NOT NULL,
+      occurrence_count INTEGER NOT NULL
+    );
   `);
 
   const columns = new Set(

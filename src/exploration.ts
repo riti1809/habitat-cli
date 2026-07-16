@@ -1,5 +1,6 @@
 import { openHabitatDatabase } from "./habitat-state-db";
 import { readModules, readRegistration, type HabitatModule } from "./habitat-store";
+import { observeAlert } from "./alerts";
 
 export const EXPLORATION_BOUNDS = {
   minX: -25,
@@ -110,6 +111,7 @@ export function deployExplorer(humanId: string, cwd = process.cwd()) {
 
   const next = { ...state, deployedHumanId: humanId, x: 0, y: 0, carriedResources: {} };
   writeExplorationState(next, cwd);
+  observeAlert("explorer-deployed", { message: "A human is deployed outside the habitat.", severity: "warning", source: "habitat.exploration", subject: { humanId } }, cwd);
   return next;
 }
 
@@ -125,6 +127,9 @@ export function moveExplorer(x: number, y: number, cwd = process.cwd()) {
   }
   const next = { ...state, x, y };
   writeExplorationState(next, cwd);
+  if (Object.values(next.carriedResources).reduce((sum, quantity) => sum + quantity, 0) >= next.maxCarryingCapacityKg) {
+    observeAlert("explorer-capacity-reached", { message: "Carried material has reached explorer capacity.", severity: "warning", source: "habitat.exploration", subject: { humanId: next.deployedHumanId ?? undefined } }, cwd);
+  }
   return next;
 }
 

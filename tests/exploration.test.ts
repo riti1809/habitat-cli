@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { createBackendApp } from "../src/server.ts";
 import { readExplorationState, writeExplorationState } from "../src/exploration.ts";
 import { readModules, readRegistration, writeModules, writeRegistration, type HabitatModule, type StoredRegistration } from "../src/habitat-store.ts";
+import { acknowledgeAlert, listAlerts, observeAlert } from "../src/alerts.ts";
 
 function setup() {
   const cwd = mkdtempSync(join(tmpdir(), "habitat-exploration-"));
@@ -18,6 +19,7 @@ function setup() {
     starterModules: [], blueprints: [], starterHumans: [
       { id: "human-1", displayName: "Abigail", locationModuleId: "suitport-1" },
     ],
+    contracts: { alerts: { schemaVersion: "1.0", schema: {} } },
   };
   const suitport: HabitatModule = {
     id: "suitport-1", alias: "suitport-1", blueprintId: "basic-suitport", moduleType: "basic-suitport",
@@ -161,4 +163,15 @@ test("collection validation and Kepler rejection preserve local carried resource
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
+});
+
+test("alerts deduplicate unresolved observations and support acknowledgement", () => {
+  const { cwd } = setup();
+  const first = observeAlert("test-condition", { message: "Condition observed.", severity: "warning", source: "test" }, cwd);
+  const second = observeAlert("test-condition", { message: "Condition observed.", severity: "warning", source: "test" }, cwd);
+  assert.equal(second.id, first.id);
+  assert.equal(second.occurrenceCount, 2);
+  assert.equal(listAlerts(cwd).length, 1);
+  assert.equal(acknowledgeAlert(first.id, cwd).status, "acknowledged");
+  assert.equal(observeAlert("test-condition", { message: "Condition observed.", severity: "warning", source: "test" }, cwd).status, "acknowledged");
 });

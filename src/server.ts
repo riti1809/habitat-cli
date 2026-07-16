@@ -51,6 +51,7 @@ import {
   validateCollection,
   type WorldCollectionResponse,
 } from "./collection";
+import { acknowledgeAlert, listAlerts, observeAlert } from "./alerts";
 
 export type BackendRegistrationView = {
   habitatUuid: string;
@@ -607,14 +608,20 @@ export function createBackendApp(options: BackendAppOptions = {}) {
 
     try {
       const { state, habitatId } = validateCollection(parsed.quantityKg, options.cwd ?? process.cwd());
-      const response = await proxyKeplerJson<WorldCollectionResponse>(
+      let response: WorldCollectionResponse;
+      try {
+        response = await proxyKeplerJson<WorldCollectionResponse>(
         "POST",
         "/world/collect",
         "/world/collect",
         options,
         true,
         { habitatId, x: state.x, y: state.y, quantityKg: parsed.quantityKg },
-      );
+        );
+      } catch (error) {
+        if (error instanceof Response) observeAlert("collection-failed", { message: "A validated collection attempt failed.", severity: "warning", source: "habitat.collection", subject: { humanId: state.deployedHumanId ?? undefined } }, options.cwd ?? process.cwd());
+        throw error;
+      }
       const exploration = persistCollection(state, response.collection, options.cwd ?? process.cwd());
       return c.json({ collection: response.collection, exploration });
     } catch (error) {
@@ -622,6 +629,12 @@ export function createBackendApp(options: BackendAppOptions = {}) {
       if (error instanceof Response) return error;
       throw error;
     }
+  });
+
+  app.get("/alerts", (c) => c.json({ alerts: listAlerts(options.cwd ?? process.cwd()) }));
+  app.post("/alerts/:alertId/acknowledge", (c) => {
+    try { return c.json({ alert: acknowledgeAlert(c.req.param("alertId"), options.cwd ?? process.cwd()) }); }
+    catch (error) { return jsonError(error instanceof Error ? error.message : String(error), 404); }
   });
 
   app.get("/modules/:moduleId", (c) => {

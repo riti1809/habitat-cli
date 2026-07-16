@@ -56,6 +56,8 @@ import {
   setInventory as setRemoteInventory,
   scanWorld,
   collectResource,
+  listAlerts as listRemoteAlerts,
+  acknowledgeAlert as acknowledgeRemoteAlert,
   unregisterHabitat as unregisterRemoteHabitat,
   updateModule as updateRemoteModule,
 } from "./local-api";
@@ -63,6 +65,7 @@ import { formatWorldScan, formatWorldScanJson } from "./world-scan";
 import { formatHumanList } from "./humans";
 import { formatExplorationStatus } from "./exploration";
 import { formatCollection } from "./collection";
+import { formatAlertList } from "./alerts";
 
 type RegisterOptions = {
   name: string;
@@ -1284,6 +1287,16 @@ program
       process.exit(1);
     }
   });
+
+const alertCommand = program.command("alert").description("Manage operational alerts.");
+alertCommand.command("list").description("List operational alerts.").action(async () => {
+  try { console.log(formatAlertList(await listRemoteAlerts())); }
+  catch (error) { printError(error); process.exit(1); }
+});
+alertCommand.command("acknowledge").argument("<alert-id>", "Alert ID").action(async (alertId: string) => {
+  try { console.log(`Acknowledged alert \"${(await acknowledgeRemoteAlert(alertId)).id}\".`); }
+  catch (error) { printError(error); process.exit(1); }
+});
 
 blueprintCommand
   .command("list")
