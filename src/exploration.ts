@@ -132,9 +132,65 @@ export function dockExplorer(cwd = process.cwd()) {
   const state = readExplorationState(cwd);
   if (!state.deployedHumanId) throw new ExplorationError("No human is deployed.", 409);
   if (state.x !== 0 || state.y !== 0) throw new ExplorationError("Docking is only allowed at (0, 0).", 400);
-  const next = { ...state, deployedHumanId: null, carriedResources: {} };
-  writeExplorationState(next, cwd);
-  return next;
+
+  const registration = readRegistration(cwd);
+  const modules = readModules(cwd);
+  if (!registration) throw new ExplorationError("No local registration found.", 404);
+  const suitport = findSuitport(modules);
+  if (!suitport) throw new ExplorationError("No suitport module is available.", 409);
+  if (!modules.some((module) => module.moduleType === "supply-cache")) {
+    throw new ExplorationError('No "supply-cache" module found.', 409);
+  }
+
+  const human = registration.starterHumans?.find((item) => item.id === state.deployedHumanId);
+  if (!human) throw new ExplorationError(`Human "${state.deployedHumanId}" was not found.`, 404);
+
+  const database = openHabitatDatabase(cwd);
+  try {
+    const transaction = database.transaction(() => {
+      const supplyCache = modules.find((module) => module.moduleType === "supply-cache")!;
+      const currentInventory = supplyCache.runtimeAttributes.inventory;
+      if (currentInventory !== undefined &&
+          (typeof currentInventory !== "object" || currentInventory === null ||
+           Object.values(currentInventory).some((quantity) => typeof quantity !== "number" || quantity < 0))) {
+        throw new Error("Supply cache inventory is not valid.");
+      }
+      const inventory = { ...(currentInventory as Record<string, number> | undefined) };
+      for (const [resourceType, quantity] of Object.entries(state.carriedResources)) {
+        inventory[resourceType] = (inventory[resourceType] ?? 0) + quantity;
+      }
+
+      const updatedModules = modules.map((module) => module.id === supplyCache.id
+        ? { ...module, runtimeAttributes: { ...module.runtimeAttributes, inventory }, updatedAt: new Date().toISOString() }
+        : module);
+      const updatedHumans = registration.starterHumans!.map((item) => item.id === human.id
+        ? { ...item, locationModuleId: suitport.id }
+        : item);
+
+      database.run(
+        `UPDATE modules SET runtime_attributes_json = ?, updated_at = ? WHERE id = ?`,
+        [JSON.stringify(updatedModules.find((module) => module.id === supplyCache.id)!.runtimeAttributes), updatedModules.find((module) => module.id === supplyCache.id)!.updatedAt, supplyCache.id],
+      );
+      database.run(
+        `UPDATE registration SET starter_humans_json = ? WHERE habitat_uuid = ?`,
+        [JSON.stringify(updatedHumans), registration.habitatUuid],
+      );
+      database.run(
+        `INSERT INTO exploration_state
+          (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg)
+         VALUES (1, NULL, 0, 0, '{}', ?)
+         ON CONFLICT(id) DO UPDATE SET
+          deployed_human_id = NULL, x = 0, y = 0, carried_resources_json = '{}',
+          max_carrying_capacity_kg = excluded.max_carrying_capacity_kg`,
+        [state.maxCarryingCapacityKg],
+      );
+    });
+    transaction();
+  } finally {
+    database.close();
+  }
+
+  return readExplorationState(cwd);
 }
 
 export function formatExplorationStatus(state: ExplorationState) {

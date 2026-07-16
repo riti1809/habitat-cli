@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 
 import { createBackendApp } from "../src/server.ts";
 import { readExplorationState, writeExplorationState } from "../src/exploration.ts";
-import { writeModules, writeRegistration, type HabitatModule, type StoredRegistration } from "../src/habitat-store.ts";
+import { readModules, readRegistration, writeModules, writeRegistration, type HabitatModule, type StoredRegistration } from "../src/habitat-store.ts";
 
 function setup() {
   const cwd = mkdtempSync(join(tmpdir(), "habitat-exploration-"));
@@ -25,8 +25,13 @@ function setup() {
     capabilities: ["limited-eva", "suitport-access"], constructionStatus: "built", source: "local",
     createdAt: registration.registeredAt, updatedAt: registration.registeredAt,
   };
+  const supplyCache: HabitatModule = {
+    id: "supply-1", alias: "supply-1", blueprintId: "supply-cache", moduleType: "supply-cache",
+    displayName: "Supply Cache", connectedTo: [], runtimeAttributes: { inventory: {} }, capabilities: [],
+    constructionStatus: "built", source: "local", createdAt: registration.registeredAt, updatedAt: registration.registeredAt,
+  };
   writeRegistration(registration, cwd);
-  writeModules([suitport], cwd);
+  writeModules([suitport, supplyCache], cwd);
   return { cwd, app: createBackendApp({ cwd, apiToken: "test-token" }) };
 }
 
@@ -57,9 +62,14 @@ test("EVA deploy, move, and dock persist local exploration state", async () => {
     method: "POST", body: JSON.stringify({ x: 0, y: 0 }), headers: { "Content-Type": "application/json" },
   });
   assert.equal(back.status, 200);
+  writeExplorationState({
+    ...readExplorationState(cwd), carriedResources: { ferrite: 3 },
+  }, cwd);
   const dock = await app.request("http://localhost/exploration/dock", { method: "POST" });
   assert.equal(dock.status, 200);
   assert.equal(readExplorationState(cwd).deployedHumanId, null);
+  assert.equal(readRegistration(cwd)?.starterHumans?.[0]?.locationModuleId, "suitport-1");
+  assert.deepEqual(readModules(cwd).find((module) => module.moduleType === "supply-cache")?.runtimeAttributes.inventory, { ferrite: 3 });
 });
 
 test("EVA deployment requires the human to be in the suitport and allows only one explorer", async () => {
